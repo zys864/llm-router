@@ -1,3 +1,4 @@
+pub mod access_log;
 pub mod admin;
 pub mod api;
 pub mod app_state;
@@ -21,7 +22,10 @@ use app_state::AppState;
 use axum::{Router, routing::get};
 use config::AppConfig;
 use providers::ProviderFactory;
-use {auth::AuthService, quota::QuotaStore, usage::UsageLogger, usage_aggregate::UsageAggregator};
+use {
+    access_log::AccessLogger, auth::AuthService, quota::QuotaStore, usage::UsageLogger,
+    usage_aggregate::UsageAggregator,
+};
 
 pub async fn build_app(config: AppConfig) -> Router {
     let registry = models::ModelRegistry::from_configs(&config.models);
@@ -31,6 +35,9 @@ pub async fn build_app(config: AppConfig) -> Router {
     let usage_logger = UsageLogger::new(config.usage_log_path.clone().map(Into::into))
         .await
         .expect("failed to initialize usage logger");
+    let access_logger = AccessLogger::new(config.access_log_path.clone().map(Into::into))
+        .await
+        .expect("failed to initialize access logger");
     if let Some(path) = &config.usage_log_path {
         if std::path::Path::new(path).exists() {
             let aggregator = UsageAggregator::from_path(std::path::Path::new(path))
@@ -49,6 +56,7 @@ pub async fn build_app(config: AppConfig) -> Router {
         auth,
         quota,
         usage_logger,
+        access_logger,
     ));
 
     Router::new()

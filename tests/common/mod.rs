@@ -388,6 +388,91 @@ pub async fn usage_logging_app() -> (axum::Router, PathBuf) {
     (app, log_path)
 }
 
+pub async fn access_logging_openai_app() -> (axum::Router, PathBuf) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{ "message": { "content": "hello from upstream" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 4, "completion_tokens": 3 }
+        })))
+        .mount(&server)
+        .await;
+
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let log_path = path.to_path_buf();
+    path.keep().unwrap();
+
+    let app = build_app(AppConfig {
+        openai_api_key: Some("test-openai".into()),
+        openai_base_url: server.uri(),
+        access_log_path: Some(log_path.display().to_string()),
+        models: vec![model("gpt-4.1", ProviderKind::OpenAi, "gpt-4.1")],
+        ..AppConfig::default()
+    })
+    .await;
+
+    (app, log_path)
+}
+
+pub async fn access_logging_fallback_app() -> (axum::Router, PathBuf) {
+    let openai = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&openai)
+        .await;
+
+    let anthropic = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "content": [{ "text": "anthropic says hi" }],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 4, "output_tokens": 3 }
+        })))
+        .mount(&anthropic)
+        .await;
+
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let log_path = path.to_path_buf();
+    path.keep().unwrap();
+
+    let app = build_app(AppConfig {
+        openai_api_key: Some("test-openai".into()),
+        openai_base_url: openai.uri(),
+        anthropic_api_key: Some("test-anthropic".into()),
+        anthropic_base_url: anthropic.uri(),
+        access_log_path: Some(log_path.display().to_string()),
+        models: vec![fallback_model("fallback-model")],
+        ..AppConfig::default()
+    })
+    .await;
+
+    (app, log_path)
+}
+
+pub async fn access_logging_failure_app() -> (axum::Router, PathBuf) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("still broken"))
+        .mount(&server)
+        .await;
+
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let log_path = path.to_path_buf();
+    path.keep().unwrap();
+
+    let app = build_app(AppConfig {
+        openai_api_key: Some("test-openai".into()),
+        openai_base_url: server.uri(),
+        access_log_path: Some(log_path.display().to_string()),
+        models: vec![model("broken-model", ProviderKind::OpenAi, "broken-model")],
+        ..AppConfig::default()
+    })
+    .await;
+
+    (app, log_path)
+}
+
 pub async fn recovered_quota_app() -> (axum::Router, PathBuf) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

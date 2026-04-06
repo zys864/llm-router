@@ -119,6 +119,7 @@ mod tests {
                 content: ChatMessageContent::Text("hello".into()),
             }],
             temperature: Some(0.2),
+            top_p: None,
             max_tokens: Some(64),
             stream: Some(false),
         };

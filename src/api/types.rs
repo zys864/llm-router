@@ -27,6 +27,7 @@ pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stream: Option<bool>,
 }
@@ -36,6 +37,7 @@ pub struct ResponsesRequest {
     pub model: String,
     pub input: String,
     pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     pub max_output_tokens: Option<u32>,
     pub stream: Option<bool>,
 }

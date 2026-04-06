@@ -9,6 +9,7 @@ use axum::{
 };
 
 use crate::{
+    access_log::{AccessLogEvent, RequestSummary},
     api::{
         authenticate_request,
         types::{ResponsesRequest, ResponsesResponse},
@@ -32,6 +33,7 @@ pub async fn create_response(
 ) -> Result<Response, AppError> {
     let caller = authenticate_request(&state, &headers)?;
     let request_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
+    let request_started_at = std::time::Instant::now();
     let plan = resolve_route_plan(
         &state.registry,
         &payload.model,
@@ -41,7 +43,45 @@ pub async fn create_response(
             Capability::Responses
         },
     )?;
-    state.quota.try_acquire_optional(caller.as_ref()).await?;
+    state
+        .access_logger
+        .append_warn(
+            AccessLogEvent::request_started(
+                request_id.clone(),
+                "POST",
+                "/v1/responses",
+                "responses",
+                payload.model.clone(),
+                payload.stream.unwrap_or(false),
+                caller.as_ref().map(|caller| caller.id.clone()),
+                RequestSummary::from_responses_request(&payload),
+            ),
+            "request_started",
+        )
+        .await;
+    if let Err(error) = state.quota.try_acquire_optional(caller.as_ref()).await {
+        state
+            .access_logger
+            .append_warn(
+                AccessLogEvent::request_finished(
+                    request_id.clone(),
+                    "responses",
+                    payload.model.clone(),
+                    payload.stream.unwrap_or(false),
+                    error.status_code().as_u16(),
+                    "error",
+                    request_started_at.elapsed().as_millis(),
+                    0,
+                    None,
+                    None,
+                    None,
+                    caller.as_ref().map(|caller| caller.id.clone()),
+                ),
+                "request_finished",
+            )
+            .await;
+        return Err(error);
+    }
 
     let mut attempts = 0usize;
     let mut last_error = None;
@@ -54,8 +94,43 @@ pub async fn create_response(
         let provider = state.provider_factory.for_route(&route)?;
 
         if request.stream {
+            let attempt_started_at = std::time::Instant::now();
             match provider.stream(request.clone()).await {
                 Ok(stream) => {
+                    state
+                        .access_logger
+                        .append_warn(
+                            AccessLogEvent::upstream_attempt_success(
+                                request_id.clone(),
+                                attempts,
+                                route.provider.as_str(),
+                                route.upstream_name.clone(),
+                                route.public_name.clone(),
+                                attempt_started_at.elapsed().as_millis(),
+                            ),
+                            "upstream_attempt",
+                        )
+                        .await;
+                    state
+                        .access_logger
+                        .append_warn(
+                            AccessLogEvent::request_finished(
+                                request_id.clone(),
+                                "responses",
+                                route.public_name.clone(),
+                                true,
+                                200,
+                                "success",
+                                request_started_at.elapsed().as_millis(),
+                                attempts,
+                                Some(route.provider.as_str().to_string()),
+                                None,
+                                None,
+                                caller.as_ref().map(|caller| caller.id.clone()),
+                            ),
+                            "request_finished",
+                        )
+                        .await;
                     state
                         .usage_logger
                         .append(UsageRecord::success(
@@ -74,14 +149,66 @@ pub async fn create_response(
                         .unwrap());
                 }
                 Err(error) => {
+                    state
+                        .access_logger
+                        .append_warn(
+                            AccessLogEvent::upstream_attempt_failure(
+                                request_id.clone(),
+                                attempts,
+                                route.provider.as_str(),
+                                route.upstream_name.clone(),
+                                route.public_name.clone(),
+                                attempt_started_at.elapsed().as_millis(),
+                                error.error_type(),
+                                error.to_string(),
+                            ),
+                            "upstream_attempt",
+                        )
+                        .await;
                     last_error = Some(error);
                     continue;
                 }
             }
         }
 
+        let attempt_started_at = std::time::Instant::now();
         match provider.complete(request.clone()).await {
             Ok(response) => {
+                let usage = response.usage.clone();
+                state
+                    .access_logger
+                    .append_warn(
+                        AccessLogEvent::upstream_attempt_success(
+                            request_id.clone(),
+                            attempts,
+                            route.provider.as_str(),
+                            route.upstream_name.clone(),
+                            route.public_name.clone(),
+                            attempt_started_at.elapsed().as_millis(),
+                        ),
+                        "upstream_attempt",
+                    )
+                    .await;
+                state
+                    .access_logger
+                    .append_warn(
+                        AccessLogEvent::request_finished(
+                            request_id.clone(),
+                            "responses",
+                            route.public_name.clone(),
+                            false,
+                            200,
+                            "success",
+                            request_started_at.elapsed().as_millis(),
+                            attempts,
+                            Some(response.provider.clone()),
+                            usage.as_ref().and_then(|usage| usage.input_tokens),
+                            usage.as_ref().and_then(|usage| usage.output_tokens),
+                            caller.as_ref().map(|caller| caller.id.clone()),
+                        ),
+                        "request_finished",
+                    )
+                    .await;
                 state
                     .usage_logger
                     .append(UsageRecord::success(
@@ -101,10 +228,52 @@ pub async fn create_response(
                 ))
                 .into_response());
             }
-            Err(error) => last_error = Some(error),
+            Err(error) => {
+                state
+                    .access_logger
+                    .append_warn(
+                        AccessLogEvent::upstream_attempt_failure(
+                            request_id.clone(),
+                            attempts,
+                            route.provider.as_str(),
+                            route.upstream_name.clone(),
+                            route.public_name.clone(),
+                            attempt_started_at.elapsed().as_millis(),
+                            error.error_type(),
+                            error.to_string(),
+                        ),
+                        "upstream_attempt",
+                    )
+                    .await;
+                last_error = Some(error);
+            }
         }
     }
 
+    let status_code = last_error
+        .as_ref()
+        .map(|error| error.status_code().as_u16())
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY.as_u16());
+    state
+        .access_logger
+        .append_warn(
+            AccessLogEvent::request_finished(
+                request_id.clone(),
+                "responses",
+                payload.model.clone(),
+                payload.stream.unwrap_or(false),
+                status_code,
+                "error",
+                request_started_at.elapsed().as_millis(),
+                attempts,
+                None,
+                None,
+                None,
+                caller.as_ref().map(|caller| caller.id.clone()),
+            ),
+            "request_finished",
+        )
+        .await;
     state
         .usage_logger
         .append(UsageRecord::failure(

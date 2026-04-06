@@ -1,6 +1,6 @@
 use crate::{
-    auth::AuthService, config::AppConfig, models::ModelRegistry, providers::ProviderFactory,
-    quota::QuotaStore, usage::UsageLogger,
+    access_log::AccessLogger, auth::AuthService, config::AppConfig, models::ModelRegistry,
+    providers::ProviderFactory, quota::QuotaStore, usage::UsageLogger,
 };
 
 #[derive(Clone)]
@@ -11,6 +11,7 @@ pub struct AppState {
     pub auth: AuthService,
     pub quota: QuotaStore,
     pub usage_logger: UsageLogger,
+    pub access_logger: AccessLogger,
 }
 
 impl AppState {
@@ -21,6 +22,7 @@ impl AppState {
         auth: AuthService,
         quota: QuotaStore,
         usage_logger: UsageLogger,
+        access_logger: AccessLogger,
     ) -> Self {
         Self {
             config,
@@ -29,6 +31,7 @@ impl AppState {
             auth,
             quota,
             usage_logger,
+            access_logger,
         }
     }
 }

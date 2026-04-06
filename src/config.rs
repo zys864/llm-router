@@ -94,6 +94,7 @@ pub struct AppConfig {
     pub model_config_path: Option<String>,
     pub proxy_api_keys_path: Option<String>,
     pub usage_log_path: Option<String>,
+    pub access_log_path: Option<String>,
     pub proxy_keys: Vec<ProxyKeyConfig>,
     pub models: Vec<ModelConfig>,
 }
@@ -112,6 +113,7 @@ impl Default for AppConfig {
             model_config_path: None,
             proxy_api_keys_path: None,
             usage_log_path: None,
+            access_log_path: None,
             proxy_keys: vec![],
             models: vec![],
         }
@@ -184,6 +186,7 @@ impl AppConfig {
         config.model_config_path = env::var("MODEL_CONFIG_PATH").ok();
         config.proxy_api_keys_path = env::var("PROXY_API_KEYS_PATH").ok();
         config.usage_log_path = env::var("USAGE_LOG_PATH").ok();
+        config.access_log_path = env::var("ACCESS_LOG_PATH").ok();
 
         if let Some(path) = &config.model_config_path {
             config.models = load_json_file(Path::new(path))?;
@@ -209,6 +212,12 @@ fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn parses_model_registry_entries() {
@@ -252,5 +261,24 @@ mod tests {
 
         let pricing = config.models[1].pricing.as_ref().unwrap();
         assert_eq!(pricing.currency, "USD");
+    }
+
+    #[test]
+    fn loads_access_log_path_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        let previous = env::var("ACCESS_LOG_PATH").ok();
+        unsafe {
+            env::set_var("ACCESS_LOG_PATH", "/tmp/access.jsonl");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.access_log_path.as_deref(), Some("/tmp/access.jsonl"));
+
+        unsafe {
+            match previous {
+                Some(value) => env::set_var("ACCESS_LOG_PATH", value),
+                None => env::remove_var("ACCESS_LOG_PATH"),
+            }
+        }
     }
 }
