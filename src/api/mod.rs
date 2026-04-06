@@ -11,13 +11,16 @@ pub mod models;
 pub mod responses;
 pub mod types;
 
-pub fn router(state: Arc<AppState>) -> Router {
+pub fn v1_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(models::router())
         .merge(chat_completions::router())
         .merge(responses::router())
-        .merge(admin::router())
         .with_state(state)
+}
+
+pub fn admin_router(state: Arc<AppState>) -> Router {
+    Router::new().merge(admin::router()).with_state(state)
 }
 
 pub fn authenticate_request(

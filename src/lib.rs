@@ -17,12 +17,12 @@ pub mod usage_aggregate;
 
 use std::sync::Arc;
 
-use api::router as api_router;
+use api::{admin_router, v1_router};
 use app_state::AppState;
 use axum::{Router, routing::get};
 use config::AppConfig;
 use providers::ProviderFactory;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use {
     access_log::AccessLogger, auth::AuthService, quota::QuotaStore, usage::UsageLogger,
     usage_aggregate::UsageAggregator,
@@ -63,6 +63,40 @@ pub async fn build_app(config: AppConfig) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .merge(api_router(state))
-        .layer(TraceLayer::new_for_http())
+        .merge(v1_router(state.clone()).layer(api_trace_layer()))
+        .merge(admin_router(state))
+}
+
+#[cfg(test)]
+fn should_trace_route(path: &str) -> bool {
+    path.starts_with("/v1/")
+}
+
+fn api_trace_layer() -> TraceLayer<
+    tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
+    DefaultMakeSpan,
+    DefaultOnRequest,
+    DefaultOnResponse,
+> {
+    TraceLayer::new_for_http()
+        .make_span_with(
+            DefaultMakeSpan::new()
+                .level(tracing::Level::INFO)
+                .include_headers(false),
+        )
+        .on_request(DefaultOnRequest::new().level(tracing::Level::INFO))
+        .on_response(DefaultOnResponse::new().level(tracing::Level::INFO))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_logging_only_targets_v1_routes() {
+        assert!(should_trace_route("/v1/models"));
+        assert!(should_trace_route("/v1/chat/completions"));
+        assert!(!should_trace_route("/healthz"));
+        assert!(!should_trace_route("/admin/models"));
+    }
 }
