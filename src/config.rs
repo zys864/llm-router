@@ -180,17 +180,17 @@ impl AppConfig {
         let mut config = Self::from_parts(&bind_addr, request_timeout_secs, raw_models)?;
         config.enable_provider_default_auth_fallback =
             env_flag("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK");
-        config.openai_api_key = env::var("OPENAI_API_KEY").ok();
-        config.anthropic_api_key = env::var("ANTHROPIC_API_KEY").ok();
-        config.gemini_api_key = env::var("GEMINI_API_KEY").ok();
+        config.openai_api_key = env_var_non_empty("OPENAI_API_KEY");
+        config.anthropic_api_key = env_var_non_empty("ANTHROPIC_API_KEY");
+        config.gemini_api_key = env_var_non_empty("GEMINI_API_KEY");
         config.openai_base_url = env::var("OPENAI_BASE_URL").unwrap_or(config.openai_base_url);
         config.anthropic_base_url =
             env::var("ANTHROPIC_BASE_URL").unwrap_or(config.anthropic_base_url);
         config.gemini_base_url = env::var("GEMINI_BASE_URL").unwrap_or(config.gemini_base_url);
-        config.model_config_path = env::var("MODEL_CONFIG_PATH").ok();
-        config.proxy_api_keys_path = env::var("PROXY_API_KEYS_PATH").ok();
-        config.usage_log_path = env::var("USAGE_LOG_PATH").ok();
-        config.access_log_path = env::var("ACCESS_LOG_PATH").ok();
+        config.model_config_path = env_var_non_empty("MODEL_CONFIG_PATH");
+        config.proxy_api_keys_path = env_var_non_empty("PROXY_API_KEYS_PATH");
+        config.usage_log_path = env_var_non_empty("USAGE_LOG_PATH");
+        config.access_log_path = env_var_non_empty("ACCESS_LOG_PATH");
 
         if config.enable_provider_default_auth_fallback {
             if config.openai_api_key.is_none() {
@@ -215,6 +215,13 @@ fn env_flag(name: &str) -> bool {
         env::var(name).ok().as_deref(),
         Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
     )
+}
+
+fn env_var_non_empty(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_openai_default_api_key() -> Result<Option<String>, AppError> {
@@ -397,6 +404,61 @@ mod tests {
             "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
             previous_fallback,
         );
+    }
+
+    #[test]
+    fn ignores_empty_env_values_for_optional_paths_and_api_keys() {
+        let _guard = env_lock().lock().unwrap();
+        let home = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        fs::write(
+            home.path().join(".codex/auth.json"),
+            r#"{
+                "tokens": {
+                    "access_token": "codex-access-token"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let previous_openai = env::var("OPENAI_API_KEY").ok();
+        let previous_home = env::var("HOME").ok();
+        let previous_fallback = env::var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK").ok();
+        let previous_model_config = env::var("MODEL_CONFIG_PATH").ok();
+        let previous_proxy_keys = env::var("PROXY_API_KEYS_PATH").ok();
+        let previous_usage_log = env::var("USAGE_LOG_PATH").ok();
+        let previous_access_log = env::var("ACCESS_LOG_PATH").ok();
+
+        unsafe {
+            env::set_var("OPENAI_API_KEY", "");
+            env::set_var("HOME", home.path());
+            env::set_var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", "true");
+            env::set_var("MODEL_CONFIG_PATH", "");
+            env::set_var("PROXY_API_KEYS_PATH", "");
+            env::set_var("USAGE_LOG_PATH", "");
+            env::set_var("ACCESS_LOG_PATH", "");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(
+            config.openai_api_key.as_deref(),
+            Some("codex-access-token")
+        );
+        assert_eq!(config.model_config_path, None);
+        assert_eq!(config.proxy_api_keys_path, None);
+        assert_eq!(config.usage_log_path, None);
+        assert_eq!(config.access_log_path, None);
+
+        restore_env("OPENAI_API_KEY", previous_openai);
+        restore_env("HOME", previous_home);
+        restore_env(
+            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
+            previous_fallback,
+        );
+        restore_env("MODEL_CONFIG_PATH", previous_model_config);
+        restore_env("PROXY_API_KEYS_PATH", previous_proxy_keys);
+        restore_env("USAGE_LOG_PATH", previous_usage_log);
+        restore_env("ACCESS_LOG_PATH", previous_access_log);
     }
 
     fn restore_env(name: &str, previous: Option<String>) {
