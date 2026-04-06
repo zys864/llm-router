@@ -5,21 +5,34 @@ use serde_json::{Value, json};
 use crate::{
     domain::{request::UnifiedRequest, response::UnifiedResponse},
     error::AppError,
-    providers::{ProviderAdapter, json_string, json_u32, map_reqwest_error, usage},
+    outbound_audit::OutboundAuditLogger,
+    providers::{
+        ProviderAdapter, audit_http_call, json_string, json_u32, map_reqwest_error, usage,
+    },
 };
 
 pub struct GeminiProvider {
     client: Client,
     api_key: String,
     base_url: String,
+    outbound_audit_logger: OutboundAuditLogger,
+    proxy_enabled: bool,
 }
 
 impl GeminiProvider {
-    pub fn new(client: Client, api_key: String, base_url: String) -> Self {
+    pub fn new(
+        client: Client,
+        api_key: String,
+        base_url: String,
+        outbound_audit_logger: OutboundAuditLogger,
+        proxy_enabled: bool,
+    ) -> Self {
         Self {
             client,
             api_key,
             base_url,
+            outbound_audit_logger,
+            proxy_enabled,
         }
     }
 
@@ -39,18 +52,55 @@ impl GeminiProvider {
     }
 
     async fn execute(&self, request: UnifiedRequest) -> Result<UnifiedResponse, AppError> {
-        let response = self
-            .client
-            .post(format!(
-                "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, request.route.upstream_name, self.api_key
-            ))
-            .json(&self.build_request_body(&request))
-            .send()
-            .await
-            .map_err(map_reqwest_error)?;
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent?key={}",
+            self.base_url, request.route.upstream_name, self.api_key
+        );
+        let request_body = self.build_request_body(&request);
+        let request_size = request_body.to_string().len() as u64;
+        let started_at = std::time::Instant::now();
+        let response = self.client.post(&url).json(&request_body).send().await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let error = map_reqwest_error(error);
+                audit_http_call(
+                    &self.outbound_audit_logger,
+                    Some(request.request_id.clone()),
+                    "gemini",
+                    "POST",
+                    &url,
+                    "failure",
+                    started_at.elapsed().as_millis(),
+                    None,
+                    Some(request_size),
+                    Some((error.error_type(), error.to_string())),
+                    self.proxy_enabled,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let status = response.status();
+        audit_http_call(
+            &self.outbound_audit_logger,
+            Some(request.request_id.clone()),
+            "gemini",
+            "POST",
+            &url,
+            if status.is_success() {
+                "success"
+            } else {
+                "failure"
+            },
+            started_at.elapsed().as_millis(),
+            Some(status.as_u16()),
+            Some(request_size),
+            None,
+            self.proxy_enabled,
+        )
+        .await;
         let body: Value = response.json().await.map_err(map_reqwest_error)?;
         if !status.is_success() {
             return Err(AppError::upstream(body.to_string()));
@@ -80,18 +130,55 @@ impl ProviderAdapter for GeminiProvider {
         &self,
         request: UnifiedRequest,
     ) -> Result<crate::domain::response::EventStream, AppError> {
-        let response = self
-            .client
-            .post(format!(
-                "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-                self.base_url, request.route.upstream_name, self.api_key
-            ))
-            .json(&self.build_request_body(&request))
-            .send()
-            .await
-            .map_err(map_reqwest_error)?;
+        let url = format!(
+            "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+            self.base_url, request.route.upstream_name, self.api_key
+        );
+        let request_body = self.build_request_body(&request);
+        let request_size = request_body.to_string().len() as u64;
+        let started_at = std::time::Instant::now();
+        let response = self.client.post(&url).json(&request_body).send().await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let error = map_reqwest_error(error);
+                audit_http_call(
+                    &self.outbound_audit_logger,
+                    Some(request.request_id.clone()),
+                    "gemini",
+                    "POST",
+                    &url,
+                    "failure",
+                    started_at.elapsed().as_millis(),
+                    None,
+                    Some(request_size),
+                    Some((error.error_type(), error.to_string())),
+                    self.proxy_enabled,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let status = response.status();
+        audit_http_call(
+            &self.outbound_audit_logger,
+            Some(request.request_id.clone()),
+            "gemini",
+            "POST",
+            &url,
+            if status.is_success() {
+                "success"
+            } else {
+                "failure"
+            },
+            started_at.elapsed().as_millis(),
+            Some(status.as_u16()),
+            Some(request_size),
+            None,
+            self.proxy_enabled,
+        )
+        .await;
         if !status.is_success() {
             return Err(AppError::upstream(
                 response
@@ -129,6 +216,8 @@ mod tests {
             reqwest::Client::new(),
             "secret".into(),
             "http://localhost".into(),
+            OutboundAuditLogger::default(),
+            false,
         );
         let payload = adapter.build_request_body(&sample_unified_request());
         assert!(payload["contents"][0]["parts"][0]["text"] == "hello");

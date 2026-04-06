@@ -7,6 +7,7 @@ use tokio::{
     sync::Mutex,
 };
 
+use crate::outbound_audit::{OutboundAuditEvent, OutboundAuditLogger};
 use crate::{error::AppError, pricing::CostEstimate};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,10 +81,16 @@ impl UsageRecord {
 #[derive(Clone, Default)]
 pub struct UsageLogger {
     file: Option<Arc<Mutex<File>>>,
+    path: Option<String>,
+    outbound_audit_logger: OutboundAuditLogger,
 }
 
 impl UsageLogger {
-    pub async fn new(path: Option<PathBuf>) -> Result<Self, AppError> {
+    pub async fn new(
+        path: Option<PathBuf>,
+        outbound_audit_logger: OutboundAuditLogger,
+    ) -> Result<Self, AppError> {
+        let path_string = path.as_ref().map(|path| path.display().to_string());
         let file = match path {
             Some(path) => {
                 let file = OpenOptions::new()
@@ -99,7 +106,11 @@ impl UsageLogger {
             None => None,
         };
 
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            path: path_string,
+            outbound_audit_logger,
+        })
     }
 
     pub async fn append(&self, record: UsageRecord) -> Result<(), AppError> {
@@ -112,12 +123,29 @@ impl UsageLogger {
             AppError::upstream(format!("failed to serialize usage record: {error}"))
         })?;
         line.push(b'\n');
+        let bytes_out = line.len() as u64;
+        let started_at = std::time::Instant::now();
         file.write_all(&line).await.map_err(|error| {
             AppError::upstream(format!("failed to write usage record: {error}"))
         })?;
         file.flush().await.map_err(|error| {
             AppError::upstream(format!("failed to flush usage record: {error}"))
         })?;
+        if let Some(path) = &self.path {
+            self.outbound_audit_logger
+                .append_warn(
+                    OutboundAuditEvent::file_event(
+                        "usage_log_write",
+                        path.clone(),
+                        "write",
+                        "success",
+                    )
+                    .with_latency_ms(started_at.elapsed().as_millis())
+                    .with_bytes_out(bytes_out),
+                    "usage_log_write",
+                )
+                .await;
+        }
         Ok(())
     }
 }
@@ -129,9 +157,12 @@ mod tests {
     #[tokio::test]
     async fn appends_usage_record_as_jsonl() {
         let path = tempfile::NamedTempFile::new().unwrap();
-        let logger = UsageLogger::new(Some(path.path().to_path_buf()))
-            .await
-            .unwrap();
+        let logger = UsageLogger::new(
+            Some(path.path().to_path_buf()),
+            OutboundAuditLogger::default(),
+        )
+        .await
+        .unwrap();
 
         logger
             .append(UsageRecord::success(

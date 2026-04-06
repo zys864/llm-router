@@ -11,6 +11,7 @@ use crate::{
         response::{EventStream, UnifiedResponse, UnifiedUsage},
     },
     error::AppError,
+    outbound_audit::{OutboundAuditEvent, OutboundAuditLogger},
     router::ModelRoute,
 };
 
@@ -61,16 +62,21 @@ pub struct ProviderFactory {
 
 impl ProviderFactory {
     pub fn from_config(config: &AppConfig) -> Result<Self, AppError> {
-        let mut client = Client::builder().timeout(Duration::from_secs(config.request_timeout_secs));
+        let outbound_audit_logger = OutboundAuditLogger::new_blocking(
+            config.outbound_audit_log_path.clone().map(Into::into),
+        )?;
+        let proxy_enabled = config.upstream_proxy_url.is_some();
+        let mut client =
+            Client::builder().timeout(Duration::from_secs(config.request_timeout_secs));
         if let Some(proxy_url) = &config.upstream_proxy_url {
             let proxy = Proxy::all(proxy_url).map_err(|error| {
                 AppError::validation(format!("invalid UPSTREAM_PROXY_URL `{proxy_url}`: {error}"))
             })?;
             client = client.proxy(proxy);
         }
-        let client = client
-            .build()
-            .map_err(|error| AppError::upstream(format!("failed to build reqwest client: {error}")))?;
+        let client = client.build().map_err(|error| {
+            AppError::upstream(format!("failed to build reqwest client: {error}"))
+        })?;
 
         let mut providers: HashMap<ProviderKind, Arc<dyn ProviderAdapter>> = HashMap::new();
 
@@ -81,6 +87,8 @@ impl ProviderFactory {
                     client.clone(),
                     api_key.clone(),
                     config.openai_base_url.clone(),
+                    outbound_audit_logger.clone(),
+                    proxy_enabled,
                 )),
             );
         }
@@ -92,6 +100,8 @@ impl ProviderFactory {
                     client.clone(),
                     api_key.clone(),
                     config.anthropic_base_url.clone(),
+                    outbound_audit_logger.clone(),
+                    proxy_enabled,
                 )),
             );
         } else if config.enable_provider_default_auth_fallback {
@@ -108,6 +118,8 @@ impl ProviderFactory {
                     client,
                     api_key.clone(),
                     config.gemini_base_url.clone(),
+                    outbound_audit_logger,
+                    proxy_enabled,
                 )),
             );
         } else if config.enable_provider_default_auth_fallback {
@@ -229,6 +241,59 @@ pub(crate) fn endpoint_path(kind: ApiKind) -> &'static str {
     }
 }
 
+pub(crate) async fn audit_http_call(
+    logger: &OutboundAuditLogger,
+    request_id: Option<String>,
+    provider: &str,
+    method: &str,
+    url: &str,
+    result: &str,
+    latency_ms: u128,
+    status_code: Option<u16>,
+    bytes_out: Option<u64>,
+    error: Option<(&str, String)>,
+    proxy_enabled: bool,
+) {
+    let target_name = sanitize_url_for_audit(url);
+    let event = OutboundAuditEvent {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        request_id,
+        operation: "provider_http_call".into(),
+        target_kind: "http".into(),
+        target_name,
+        action: method.into(),
+        result: result.into(),
+        latency_ms: Some(latency_ms),
+        status_code,
+        bytes_in: None,
+        bytes_out,
+        error_kind: error.as_ref().map(|(kind, _)| (*kind).to_string()),
+        error_message: error.map(|(_, message)| message),
+        metadata: std::collections::BTreeMap::new(),
+    }
+    .with_metadata("provider", provider)
+    .with_metadata(
+        "proxy",
+        if proxy_enabled {
+            "configured"
+        } else {
+            "direct"
+        },
+    );
+    logger.append_warn(event, "provider_http_call").await;
+}
+
+fn sanitize_url_for_audit(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("unknown");
+            let path = parsed.path();
+            format!("{host}{path}")
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +315,10 @@ mod tests {
             })
             .unwrap();
 
-        let error = provider.complete(sample_request(ProviderKind::Anthropic)).await.unwrap_err();
+        let error = provider
+            .complete(sample_request(ProviderKind::Anthropic))
+            .await
+            .unwrap_err();
         assert!(matches!(error, AppError::NotImplemented(_)));
     }
 

@@ -7,6 +7,7 @@ pub mod config;
 pub mod domain;
 pub mod error;
 pub mod models;
+pub mod outbound_audit;
 pub mod pricing;
 pub mod providers;
 pub mod quota;
@@ -24,22 +25,32 @@ use config::AppConfig;
 use providers::ProviderFactory;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use {
-    access_log::AccessLogger, auth::AuthService, quota::QuotaStore, usage::UsageLogger,
-    usage_aggregate::UsageAggregator,
+    access_log::AccessLogger, auth::AuthService, outbound_audit::OutboundAuditLogger,
+    quota::QuotaStore, usage::UsageLogger, usage_aggregate::UsageAggregator,
 };
 
 pub async fn build_app(config: AppConfig) -> Router {
     let registry = models::ModelRegistry::from_configs(&config.models);
-    let provider_factory = ProviderFactory::from_config(&config)
-        .expect("failed to initialize provider factory");
+    let provider_factory =
+        ProviderFactory::from_config(&config).expect("failed to initialize provider factory");
     let auth = AuthService::new(config.proxy_keys.clone());
     let quota = QuotaStore::new(config.proxy_keys.clone());
-    let usage_logger = UsageLogger::new(config.usage_log_path.clone().map(Into::into))
-        .await
-        .expect("failed to initialize usage logger");
-    let access_logger = AccessLogger::new(config.access_log_path.clone().map(Into::into))
-        .await
-        .expect("failed to initialize access logger");
+    let outbound_audit_logger =
+        OutboundAuditLogger::new(config.outbound_audit_log_path.clone().map(Into::into))
+            .await
+            .expect("failed to initialize outbound audit logger");
+    let usage_logger = UsageLogger::new(
+        config.usage_log_path.clone().map(Into::into),
+        outbound_audit_logger.clone(),
+    )
+    .await
+    .expect("failed to initialize usage logger");
+    let access_logger = AccessLogger::new(
+        config.access_log_path.clone().map(Into::into),
+        outbound_audit_logger.clone(),
+    )
+    .await
+    .expect("failed to initialize access logger");
     if let Some(path) = &config.usage_log_path {
         if std::path::Path::new(path).exists() {
             let aggregator = UsageAggregator::from_path(std::path::Path::new(path))
@@ -59,6 +70,7 @@ pub async fn build_app(config: AppConfig) -> Router {
         quota,
         usage_logger,
         access_logger,
+        outbound_audit_logger,
     ));
 
     Router::new()
@@ -91,6 +103,11 @@ fn api_trace_layer() -> TraceLayer<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn app_builds_without_panicking() {
+        let _ = build_app(AppConfig::default()).await;
+    }
 
     #[test]
     fn trace_logging_only_targets_v1_routes() {

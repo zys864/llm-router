@@ -52,6 +52,7 @@ Environment variables:
 - `PROXY_API_KEYS_PATH`
 - `USAGE_LOG_PATH`
 - `ACCESS_LOG_PATH`
+- `OUTBOUND_AUDIT_LOG_PATH`
 
 `MODEL_MAPPINGS` is a comma-separated list in this format:
 
@@ -128,6 +129,7 @@ curl -N -X POST http://127.0.0.1:3000/v1/chat/completions \
 - `PROXY_API_KEYS_PATH` enables bearer auth and request quotas.
 - `USAGE_LOG_PATH` appends one terminal JSONL record per request.
 - `ACCESS_LOG_PATH` appends structured JSONL access events for request start, upstream attempts, and request finish.
+- `OUTBOUND_AUDIT_LOG_PATH` appends unified outbound audit events for provider HTTP calls and file-based dependencies without storing sensitive request bodies or credentials.
 - Access logs include request-shape summaries only; raw prompts are never written.
 - Usage logs are also used for startup quota recovery when `USAGE_LOG_PATH` is configured.
 - Requests for unknown models fail before any upstream call is attempted.

@@ -1,8 +1,15 @@
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{error::AppError, providers::ProviderKind};
+use crate::{
+    error::AppError,
+    outbound_audit::{OutboundAuditEvent, OutboundAuditLogger},
+    providers::ProviderKind,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModelCapabilities {
@@ -97,6 +104,7 @@ pub struct AppConfig {
     pub proxy_api_keys_path: Option<String>,
     pub usage_log_path: Option<String>,
     pub access_log_path: Option<String>,
+    pub outbound_audit_log_path: Option<String>,
     pub proxy_keys: Vec<ProxyKeyConfig>,
     pub models: Vec<ModelConfig>,
 }
@@ -118,6 +126,7 @@ impl Default for AppConfig {
             proxy_api_keys_path: None,
             usage_log_path: None,
             access_log_path: None,
+            outbound_audit_log_path: None,
             proxy_keys: vec![],
             models: vec![],
         }
@@ -148,6 +157,7 @@ impl AppConfig {
         usage_log_path: Option<impl AsRef<Path>>,
     ) -> Result<Self, AppError> {
         let mut config = Self::default();
+        let audit = OutboundAuditLogger::default();
         config.model_config_path = Some(model_config_path.as_ref().display().to_string());
         config.proxy_api_keys_path = proxy_keys_path
             .as_ref()
@@ -155,9 +165,9 @@ impl AppConfig {
         config.usage_log_path = usage_log_path
             .as_ref()
             .map(|path| path.as_ref().display().to_string());
-        config.models = load_json_file(model_config_path.as_ref())?;
+        config.models = load_json_file(model_config_path.as_ref(), &audit)?;
         if let Some(path) = proxy_keys_path {
-            config.proxy_keys = load_json_file(path.as_ref())?;
+            config.proxy_keys = load_json_file(path.as_ref(), &audit)?;
         }
         Ok(config)
     }
@@ -180,6 +190,9 @@ impl AppConfig {
             .unwrap_or_default();
 
         let mut config = Self::from_parts(&bind_addr, request_timeout_secs, raw_models)?;
+        let outbound_audit_logger = OutboundAuditLogger::new_blocking(
+            env_var_non_empty("OUTBOUND_AUDIT_LOG_PATH").map(Into::into),
+        )?;
         config.upstream_proxy_url = env_var_non_empty("UPSTREAM_PROXY_URL");
         config.enable_provider_default_auth_fallback =
             env_flag("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK");
@@ -194,6 +207,7 @@ impl AppConfig {
         config.proxy_api_keys_path = env_var_non_empty("PROXY_API_KEYS_PATH");
         config.usage_log_path = env_var_non_empty("USAGE_LOG_PATH");
         config.access_log_path = env_var_non_empty("ACCESS_LOG_PATH");
+        config.outbound_audit_log_path = env_var_non_empty("OUTBOUND_AUDIT_LOG_PATH");
 
         if config.enable_provider_default_auth_fallback {
             if config.openai_api_key.is_none() {
@@ -202,11 +216,11 @@ impl AppConfig {
         }
 
         if let Some(path) = &config.model_config_path {
-            config.models = load_json_file(Path::new(path))?;
+            config.models = load_json_file(Path::new(path), &outbound_audit_logger)?;
         }
 
         if let Some(path) = &config.proxy_api_keys_path {
-            config.proxy_keys = load_json_file(Path::new(path))?;
+            config.proxy_keys = load_json_file(Path::new(path), &outbound_audit_logger)?;
         }
 
         Ok(config)
@@ -236,7 +250,7 @@ fn load_openai_default_api_key() -> Result<Option<String>, AppError> {
         return Ok(None);
     }
 
-    let auth: CodexAuthFile = load_json_file(&path)?;
+    let auth: CodexAuthFile = load_json_file(&path, &OutboundAuditLogger::default())?;
     Ok(auth.openai_api_key.filter(|value| !value.trim().is_empty()))
 }
 
@@ -246,10 +260,42 @@ struct CodexAuthFile {
     openai_api_key: Option<String>,
 }
 
-fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppError> {
-    let body = fs::read_to_string(path).map_err(|error| {
-        AppError::validation(format!("failed to read {}: {error}", path.display()))
-    })?;
+fn load_json_file<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    audit_logger: &OutboundAuditLogger,
+) -> Result<T, AppError> {
+    let started_at = std::time::Instant::now();
+    let path_display = path.display().to_string();
+    let body = match fs::read_to_string(path) {
+        Ok(body) => {
+            let bytes = body.len() as u64;
+            let event = OutboundAuditEvent::file_event(
+                "config_file_load",
+                path_display.clone(),
+                "read",
+                "success",
+            )
+            .with_latency_ms(started_at.elapsed().as_millis())
+            .with_bytes_in(bytes);
+            audit_logger.append_warn_blocking(event, "config_file_load");
+            body
+        }
+        Err(error) => {
+            let event = OutboundAuditEvent::file_event(
+                "config_file_load",
+                path_display.clone(),
+                "read",
+                "failure",
+            )
+            .with_latency_ms(started_at.elapsed().as_millis())
+            .with_error("io_error", error.to_string());
+            audit_logger.append_warn_blocking(event, "config_file_load");
+            return Err(AppError::validation(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )));
+        }
+    };
     serde_json::from_str(&body).map_err(|error| {
         AppError::validation(format!("failed to parse {}: {error}", path.display()))
     })
@@ -330,6 +376,23 @@ mod tests {
     }
 
     #[test]
+    fn loads_outbound_audit_log_path_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        let previous = env::var("OUTBOUND_AUDIT_LOG_PATH").ok();
+        unsafe {
+            env::set_var("OUTBOUND_AUDIT_LOG_PATH", "/tmp/outbound-audit.jsonl");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(
+            config.outbound_audit_log_path.as_deref(),
+            Some("/tmp/outbound-audit.jsonl")
+        );
+
+        restore_env("OUTBOUND_AUDIT_LOG_PATH", previous);
+    }
+
+    #[test]
     fn loads_upstream_proxy_url_from_env() {
         let _guard = env_lock().lock().unwrap();
         let previous = env::var("UPSTREAM_PROXY_URL").ok();
@@ -374,17 +437,11 @@ mod tests {
         }
 
         let config = AppConfig::from_env().unwrap();
-        assert_eq!(
-            config.openai_api_key.as_deref(),
-            Some("sk-from-codex-auth")
-        );
+        assert_eq!(config.openai_api_key.as_deref(), Some("sk-from-codex-auth"));
 
         restore_env("OPENAI_API_KEY", previous_openai);
         restore_env("HOME", previous_home);
-        restore_env(
-            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
-            previous_fallback,
-        );
+        restore_env("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", previous_fallback);
     }
 
     #[test]
@@ -418,10 +475,7 @@ mod tests {
 
         restore_env("OPENAI_API_KEY", previous_openai);
         restore_env("HOME", previous_home);
-        restore_env(
-            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
-            previous_fallback,
-        );
+        restore_env("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", previous_fallback);
     }
 
     #[test]
@@ -448,6 +502,7 @@ mod tests {
         let previous_usage_log = env::var("USAGE_LOG_PATH").ok();
         let previous_access_log = env::var("ACCESS_LOG_PATH").ok();
         let previous_upstream_proxy = env::var("UPSTREAM_PROXY_URL").ok();
+        let previous_outbound_audit = env::var("OUTBOUND_AUDIT_LOG_PATH").ok();
 
         unsafe {
             env::set_var("OPENAI_API_KEY", "");
@@ -458,30 +513,27 @@ mod tests {
             env::set_var("USAGE_LOG_PATH", "");
             env::set_var("ACCESS_LOG_PATH", "");
             env::set_var("UPSTREAM_PROXY_URL", "");
+            env::set_var("OUTBOUND_AUDIT_LOG_PATH", "");
         }
 
         let config = AppConfig::from_env().unwrap();
-        assert_eq!(
-            config.openai_api_key.as_deref(),
-            Some("sk-from-codex-auth")
-        );
+        assert_eq!(config.openai_api_key.as_deref(), Some("sk-from-codex-auth"));
         assert_eq!(config.model_config_path, None);
         assert_eq!(config.proxy_api_keys_path, None);
         assert_eq!(config.usage_log_path, None);
         assert_eq!(config.access_log_path, None);
         assert_eq!(config.upstream_proxy_url, None);
+        assert_eq!(config.outbound_audit_log_path, None);
 
         restore_env("OPENAI_API_KEY", previous_openai);
         restore_env("HOME", previous_home);
-        restore_env(
-            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
-            previous_fallback,
-        );
+        restore_env("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", previous_fallback);
         restore_env("MODEL_CONFIG_PATH", previous_model_config);
         restore_env("PROXY_API_KEYS_PATH", previous_proxy_keys);
         restore_env("USAGE_LOG_PATH", previous_usage_log);
         restore_env("ACCESS_LOG_PATH", previous_access_log);
         restore_env("UPSTREAM_PROXY_URL", previous_upstream_proxy);
+        restore_env("OUTBOUND_AUDIT_LOG_PATH", previous_outbound_audit);
     }
 
     #[test]
@@ -516,10 +568,58 @@ mod tests {
 
         restore_env("OPENAI_API_KEY", previous_openai);
         restore_env("HOME", previous_home);
-        restore_env(
-            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
-            previous_fallback,
-        );
+        restore_env("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", previous_fallback);
+    }
+
+    #[test]
+    fn records_outbound_audit_for_config_file_read() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let model_config_path = dir.path().join("model-config.json");
+        let audit_log_path = dir.path().join("outbound-audit.jsonl");
+        fs::write(
+            &model_config_path,
+            r#"[{
+                "public_name": "gpt-4.1",
+                "capabilities": {
+                    "chat_completions": true,
+                    "responses": true,
+                    "streaming": true
+                },
+                "pricing": null,
+                "targets": [{
+                    "provider": "openai",
+                    "upstream_name": "gpt-4.1",
+                    "priority": 100,
+                    "capabilities": {
+                        "chat_completions": true,
+                        "responses": true,
+                        "streaming": true
+                    }
+                }]
+            }]"#,
+        )
+        .unwrap();
+
+        let previous_model_config = env::var("MODEL_CONFIG_PATH").ok();
+        let previous_audit = env::var("OUTBOUND_AUDIT_LOG_PATH").ok();
+
+        unsafe {
+            env::set_var("MODEL_CONFIG_PATH", &model_config_path);
+            env::set_var("OUTBOUND_AUDIT_LOG_PATH", &audit_log_path);
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.models.len(), 1);
+
+        let body = fs::read_to_string(&audit_log_path).unwrap();
+        assert!(body.contains("\"target_kind\":\"file\""));
+        assert!(body.contains("\"action\":\"read\""));
+        assert!(body.contains("\"result\":\"success\""));
+        assert!(body.contains("model-config.json"));
+
+        restore_env("MODEL_CONFIG_PATH", previous_model_config);
+        restore_env("OUTBOUND_AUDIT_LOG_PATH", previous_audit);
     }
 
     fn restore_env(name: &str, previous: Option<String>) {

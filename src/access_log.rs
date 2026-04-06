@@ -10,6 +10,7 @@ use tokio::{
 use crate::{
     api::types::{ChatCompletionRequest, ChatMessageContent, ResponsesRequest},
     error::AppError,
+    outbound_audit::{OutboundAuditEvent, OutboundAuditLogger},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,10 +225,16 @@ impl RequestSummary {
 #[derive(Clone, Default)]
 pub struct AccessLogger {
     file: Option<Arc<Mutex<File>>>,
+    path: Option<String>,
+    outbound_audit_logger: OutboundAuditLogger,
 }
 
 impl AccessLogger {
-    pub async fn new(path: Option<PathBuf>) -> Result<Self, AppError> {
+    pub async fn new(
+        path: Option<PathBuf>,
+        outbound_audit_logger: OutboundAuditLogger,
+    ) -> Result<Self, AppError> {
+        let path_string = path.as_ref().map(|path| path.display().to_string());
         let file = match path {
             Some(path) => {
                 let file = OpenOptions::new()
@@ -243,7 +250,11 @@ impl AccessLogger {
             None => None,
         };
 
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            path: path_string,
+            outbound_audit_logger,
+        })
     }
 
     pub async fn append(&self, event: AccessLogEvent) -> Result<(), AppError> {
@@ -256,12 +267,29 @@ impl AccessLogger {
             AppError::upstream(format!("failed to serialize access log: {error}"))
         })?;
         line.push(b'\n');
+        let bytes_out = line.len() as u64;
+        let started_at = std::time::Instant::now();
         file.write_all(&line)
             .await
             .map_err(|error| AppError::upstream(format!("failed to write access log: {error}")))?;
         file.flush()
             .await
             .map_err(|error| AppError::upstream(format!("failed to flush access log: {error}")))?;
+        if let Some(path) = &self.path {
+            self.outbound_audit_logger
+                .append_warn(
+                    OutboundAuditEvent::file_event(
+                        "access_log_write",
+                        path.clone(),
+                        "write",
+                        "success",
+                    )
+                    .with_latency_ms(started_at.elapsed().as_millis())
+                    .with_bytes_out(bytes_out),
+                    "access_log_write",
+                )
+                .await;
+        }
         Ok(())
     }
 
@@ -336,9 +364,12 @@ mod tests {
     #[tokio::test]
     async fn appends_access_log_event_as_jsonl() {
         let path = tempfile::NamedTempFile::new().unwrap();
-        let logger = AccessLogger::new(Some(path.path().to_path_buf()))
-            .await
-            .unwrap();
+        let logger = AccessLogger::new(
+            Some(path.path().to_path_buf()),
+            OutboundAuditLogger::default(),
+        )
+        .await
+        .unwrap();
 
         logger
             .append(AccessLogEvent::request_started(
@@ -361,7 +392,9 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_access_logger_is_a_no_op() {
-        let logger = AccessLogger::new(None).await.unwrap();
+        let logger = AccessLogger::new(None, OutboundAuditLogger::default())
+            .await
+            .unwrap();
         logger
             .append(AccessLogEvent::request_finished(
                 "req_123",

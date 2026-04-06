@@ -8,21 +8,35 @@ use crate::{
         response::UnifiedResponse,
     },
     error::AppError,
-    providers::{ProviderAdapter, endpoint_path, json_string, json_u32, map_reqwest_error, usage},
+    outbound_audit::OutboundAuditLogger,
+    providers::{
+        ProviderAdapter, audit_http_call, endpoint_path, json_string, json_u32, map_reqwest_error,
+        usage,
+    },
 };
 
 pub struct OpenAiProvider {
     client: Client,
     api_key: String,
     base_url: String,
+    outbound_audit_logger: OutboundAuditLogger,
+    proxy_enabled: bool,
 }
 
 impl OpenAiProvider {
-    pub fn new(client: Client, api_key: String, base_url: String) -> Self {
+    pub fn new(
+        client: Client,
+        api_key: String,
+        base_url: String,
+        outbound_audit_logger: OutboundAuditLogger,
+        proxy_enabled: bool,
+    ) -> Self {
         Self {
             client,
             api_key,
             base_url,
+            outbound_audit_logger,
+            proxy_enabled,
         }
     }
 
@@ -39,20 +53,58 @@ impl OpenAiProvider {
     }
 
     async fn execute(&self, request: UnifiedRequest) -> Result<UnifiedResponse, AppError> {
+        let url = format!("{}{}", self.base_url, endpoint_path(request.api_kind));
+        let request_body = self.build_request_body(&request);
+        let request_size = request_body.to_string().len() as u64;
+        let started_at = std::time::Instant::now();
         let response = self
             .client
-            .post(format!(
-                "{}{}",
-                self.base_url,
-                endpoint_path(request.api_kind)
-            ))
+            .post(&url)
             .bearer_auth(&self.api_key)
-            .json(&self.build_request_body(&request))
+            .json(&request_body)
             .send()
-            .await
-            .map_err(map_reqwest_error)?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let error = map_reqwest_error(error);
+                audit_http_call(
+                    &self.outbound_audit_logger,
+                    Some(request.request_id.clone()),
+                    "openai",
+                    "POST",
+                    &url,
+                    "failure",
+                    started_at.elapsed().as_millis(),
+                    None,
+                    Some(request_size),
+                    Some((error.error_type(), error.to_string())),
+                    self.proxy_enabled,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let status = response.status();
+        audit_http_call(
+            &self.outbound_audit_logger,
+            Some(request.request_id.clone()),
+            "openai",
+            "POST",
+            &url,
+            if status.is_success() {
+                "success"
+            } else {
+                "failure"
+            },
+            started_at.elapsed().as_millis(),
+            Some(status.as_u16()),
+            Some(request_size),
+            None,
+            self.proxy_enabled,
+        )
+        .await;
         let body: Value = response.json().await.map_err(map_reqwest_error)?;
         if !status.is_success() {
             return Err(AppError::upstream(body.to_string()));
@@ -90,20 +142,58 @@ impl ProviderAdapter for OpenAiProvider {
         mut request: UnifiedRequest,
     ) -> Result<crate::domain::response::EventStream, AppError> {
         request.stream = true;
+        let url = format!("{}{}", self.base_url, endpoint_path(request.api_kind));
+        let request_body = self.build_request_body(&request);
+        let request_size = request_body.to_string().len() as u64;
+        let started_at = std::time::Instant::now();
         let response = self
             .client
-            .post(format!(
-                "{}{}",
-                self.base_url,
-                endpoint_path(request.api_kind)
-            ))
+            .post(&url)
             .bearer_auth(&self.api_key)
-            .json(&self.build_request_body(&request))
+            .json(&request_body)
             .send()
-            .await
-            .map_err(map_reqwest_error)?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let error = map_reqwest_error(error);
+                audit_http_call(
+                    &self.outbound_audit_logger,
+                    Some(request.request_id.clone()),
+                    "openai",
+                    "POST",
+                    &url,
+                    "failure",
+                    started_at.elapsed().as_millis(),
+                    None,
+                    Some(request_size),
+                    Some((error.error_type(), error.to_string())),
+                    self.proxy_enabled,
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         let status = response.status();
+        audit_http_call(
+            &self.outbound_audit_logger,
+            Some(request.request_id.clone()),
+            "openai",
+            "POST",
+            &url,
+            if status.is_success() {
+                "success"
+            } else {
+                "failure"
+            },
+            started_at.elapsed().as_millis(),
+            Some(status.as_u16()),
+            Some(request_size),
+            None,
+            self.proxy_enabled,
+        )
+        .await;
         if !status.is_success() {
             return Err(AppError::upstream(
                 response
@@ -149,6 +239,8 @@ mod tests {
             reqwest::Client::new(),
             "secret".into(),
             "http://localhost".into(),
+            OutboundAuditLogger::default(),
+            false,
         );
         let payload = adapter.build_request_body(&sample_unified_request());
 
