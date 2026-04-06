@@ -4,7 +4,7 @@ use axum::Router;
 
 use axum::http::HeaderMap;
 
-use crate::{app_state::AppState, auth::AuthenticatedCaller, error::AppError};
+use crate::{admin, app_state::AppState, auth::AuthenticatedCaller, error::AppError};
 
 pub mod chat_completions;
 pub mod models;
@@ -16,6 +16,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(models::router())
         .merge(chat_completions::router())
         .merge(responses::router())
+        .merge(admin::router())
         .with_state(state)
 }
 

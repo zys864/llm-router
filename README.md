@@ -12,6 +12,8 @@ An OpenRouter-style LLM proxy written in Rust.
 - Fallback routing across multiple upstream targets
 - Optional proxy bearer auth and request quotas
 - Append-only usage logging to JSONL
+- Pricing metadata and estimated usage cost
+- Read-only admin APIs for models, callers, and usage summaries
 - Unified JSON error envelopes
 - Real upstream streaming normalized into OpenAI-style SSE output
 - Unit and integration coverage with mocked upstream providers
@@ -63,6 +65,12 @@ gpt-4.1=openai:gpt-4.1,claude-sonnet-4=anthropic:claude-sonnet-4-20250514,gemini
 
 For richer routing, auth, and quota setup, use the example files in
 `examples/model-config.json` and `examples/proxy-keys.json`.
+
+Admin routes:
+
+- `GET /admin/models`
+- `GET /admin/callers`
+- `GET /admin/usage/summary`
 
 ## Example Requests
 
@@ -116,4 +124,5 @@ curl -N -X POST http://127.0.0.1:3000/v1/chat/completions \
 - `MODEL_CONFIG_PATH` enables multi-target model definitions and fallback order.
 - `PROXY_API_KEYS_PATH` enables bearer auth and request quotas.
 - `USAGE_LOG_PATH` appends one terminal JSONL record per request.
+- Usage logs are also used for startup quota recovery when `USAGE_LOG_PATH` is configured.
 - Requests for unknown models fail before any upstream call is attempted.

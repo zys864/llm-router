@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::{
-    config::{ModelCapabilities, ModelConfig},
+    config::{ModelCapabilities, ModelConfig, ModelPricing},
     providers::ProviderKind,
 };
 
@@ -13,10 +13,11 @@ pub struct ModelTarget {
     pub capabilities: ModelCapabilities,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ModelRecord {
     pub public_name: String,
     pub capabilities: ModelCapabilities,
+    pub pricing: Option<ModelPricing>,
     pub targets: Vec<ModelTarget>,
 }
 
@@ -29,6 +30,7 @@ impl ModelRecord {
         Self {
             public_name: public_name.into(),
             capabilities: ModelCapabilities::all(),
+            pricing: None,
             targets: vec![ModelTarget {
                 provider,
                 upstream_name: upstream_name.into(),
@@ -56,6 +58,7 @@ impl ModelRegistry {
                 .map(|config| ModelRecord {
                     public_name: config.public_name.clone(),
                     capabilities: config.capabilities.clone(),
+                    pricing: config.pricing.clone(),
                     targets: config
                         .targets
                         .iter()

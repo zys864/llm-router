@@ -128,6 +128,7 @@ mod tests {
         ModelRegistry::new(vec![ModelRecord {
             public_name: "claude-sonnet-4".into(),
             capabilities: ModelCapabilities::all(),
+            pricing: None,
             targets: vec![
                 ModelTarget {
                     provider: ProviderKind::Anthropic,

@@ -30,11 +30,19 @@ pub struct ModelTargetConfig {
     pub capabilities: ModelCapabilities,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct ModelPricing {
+    pub currency: String,
+    pub input_per_million: f64,
+    pub output_per_million: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ModelConfig {
     pub public_name: String,
     #[serde(default = "ModelCapabilities::all")]
     pub capabilities: ModelCapabilities,
+    pub pricing: Option<ModelPricing>,
     pub targets: Vec<ModelTargetConfig>,
 }
 
@@ -55,6 +63,7 @@ impl ModelConfig {
         Ok(Self {
             public_name: public_name.to_string(),
             capabilities: ModelCapabilities::all(),
+            pricing: None,
             targets: vec![ModelTargetConfig {
                 provider: ProviderKind::parse(provider)?,
                 upstream_name: upstream_name.to_string(),
@@ -233,5 +242,15 @@ mod tests {
 
         assert_eq!(config.proxy_keys.len(), 1);
         assert_eq!(config.proxy_keys[0].id, "team-alpha");
+    }
+
+    #[test]
+    fn loads_model_pricing_from_json_file() {
+        let config =
+            AppConfig::from_test_paths("examples/model-config.json", None::<&str>, None::<&str>)
+                .unwrap();
+
+        let pricing = config.models[1].pricing.as_ref().unwrap();
+        assert_eq!(pricing.currency, "USD");
     }
 }

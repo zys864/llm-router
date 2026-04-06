@@ -1,16 +1,17 @@
 use std::{path::PathBuf, sync::Arc};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{File, OpenOptions},
     io::AsyncWriteExt,
     sync::Mutex,
 };
 
-use crate::error::AppError;
+use crate::{error::AppError, pricing::CostEstimate};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UsageRecord {
+    pub timestamp: String,
     pub request_id: String,
     pub caller_id: Option<String>,
     pub model: String,
@@ -19,6 +20,9 @@ pub struct UsageRecord {
     pub api_kind: String,
     pub stream: bool,
     pub status: String,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub estimated_cost: Option<CostEstimate>,
 }
 
 impl UsageRecord {
@@ -32,6 +36,7 @@ impl UsageRecord {
         caller_id: Option<String>,
     ) -> Self {
         Self {
+            timestamp: chrono::Utc::now().to_rfc3339(),
             request_id: request_id.into(),
             caller_id,
             model: model.into(),
@@ -40,6 +45,9 @@ impl UsageRecord {
             api_kind: api_kind.into(),
             stream,
             status: "success".into(),
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
         }
     }
 
@@ -53,6 +61,7 @@ impl UsageRecord {
         caller_id: Option<String>,
     ) -> Self {
         Self {
+            timestamp: chrono::Utc::now().to_rfc3339(),
             request_id: request_id.into(),
             caller_id,
             model: model.into(),
@@ -61,6 +70,9 @@ impl UsageRecord {
             api_kind: api_kind.into(),
             stream,
             status: status.into(),
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
         }
     }
 }
@@ -102,6 +114,9 @@ impl UsageLogger {
         line.push(b'\n');
         file.write_all(&line).await.map_err(|error| {
             AppError::upstream(format!("failed to write usage record: {error}"))
+        })?;
+        file.flush().await.map_err(|error| {
+            AppError::upstream(format!("failed to flush usage record: {error}"))
         })?;
         Ok(())
     }

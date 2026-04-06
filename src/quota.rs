@@ -45,6 +45,27 @@ impl QuotaStore {
             Ok(())
         }
     }
+
+    pub async fn seed_usage(&self, recovered_counts: HashMap<String, u64>) -> Result<(), AppError> {
+        let mut counters = self.counters.lock().await;
+        for (caller_id, count) in recovered_counts {
+            counters.insert(caller_id, count);
+        }
+        Ok(())
+    }
+
+    pub async fn snapshot(&self) -> HashMap<String, (u64, u64)> {
+        let counters = self.counters.lock().await;
+        self.limits
+            .iter()
+            .map(|(caller, limit)| {
+                (
+                    caller.clone(),
+                    (counters.get(caller).copied().unwrap_or_default(), *limit),
+                )
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

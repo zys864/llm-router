@@ -14,7 +14,9 @@ use wiremock::{
 
 use llm_router::{
     build_app,
-    config::{AppConfig, ModelCapabilities, ModelConfig, ModelTargetConfig, ProxyKeyConfig},
+    config::{
+        AppConfig, ModelCapabilities, ModelConfig, ModelPricing, ModelTargetConfig, ProxyKeyConfig,
+    },
     providers::ProviderKind,
 };
 
@@ -94,6 +96,7 @@ pub fn model(public_name: &str, provider: ProviderKind, upstream_name: &str) -> 
     ModelConfig {
         public_name: public_name.into(),
         capabilities: ModelCapabilities::all(),
+        pricing: None,
         targets: vec![ModelTargetConfig {
             provider,
             upstream_name: upstream_name.into(),
@@ -107,6 +110,7 @@ pub fn fallback_model(public_name: &str) -> ModelConfig {
     ModelConfig {
         public_name: public_name.into(),
         capabilities: ModelCapabilities::all(),
+        pricing: None,
         targets: vec![
             ModelTargetConfig {
                 provider: ProviderKind::OpenAi,
@@ -273,6 +277,29 @@ pub async fn auth_enabled_app() -> axum::Router {
     .await
 }
 
+pub async fn auth_enabled_admin_app() -> axum::Router {
+    build_app(AppConfig {
+        proxy_keys: auth_keys(10),
+        models: vec![ModelConfig {
+            public_name: "gpt-4.1".into(),
+            capabilities: ModelCapabilities::all(),
+            pricing: Some(ModelPricing {
+                currency: "USD".into(),
+                input_per_million: 2.0,
+                output_per_million: 8.0,
+            }),
+            targets: vec![ModelTargetConfig {
+                provider: ProviderKind::OpenAi,
+                upstream_name: "gpt-4.1".into(),
+                priority: 100,
+                capabilities: ModelCapabilities::all(),
+            }],
+        }],
+        ..AppConfig::default()
+    })
+    .await
+}
+
 pub async fn quota_limited_app() -> axum::Router {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -336,6 +363,52 @@ pub async fn usage_logging_app() -> (axum::Router, PathBuf) {
     path.keep().unwrap();
 
     let app = build_app(AppConfig {
+        openai_api_key: Some("test-openai".into()),
+        openai_base_url: server.uri(),
+        usage_log_path: Some(log_path.display().to_string()),
+        models: vec![ModelConfig {
+            public_name: "gpt-4.1".into(),
+            capabilities: ModelCapabilities::all(),
+            pricing: Some(ModelPricing {
+                currency: "USD".into(),
+                input_per_million: 2.0,
+                output_per_million: 8.0,
+            }),
+            targets: vec![ModelTargetConfig {
+                provider: ProviderKind::OpenAi,
+                upstream_name: "gpt-4.1".into(),
+                priority: 100,
+                capabilities: ModelCapabilities::all(),
+            }],
+        }],
+        ..AppConfig::default()
+    })
+    .await;
+
+    (app, log_path)
+}
+
+pub async fn recovered_quota_app() -> (axum::Router, PathBuf) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{ "message": { "content": "ok" }, "finish_reason": "stop" }]
+        })))
+        .mount(&server)
+        .await;
+
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let log_path = path.to_path_buf();
+    std::fs::write(
+        &log_path,
+        "{\"timestamp\":\"2026-04-06T00:00:00Z\",\"request_id\":\"req_1\",\"caller_id\":\"team-alpha\",\"model\":\"gpt-4.1\",\"provider\":\"openai\",\"attempts\":1,\"api_kind\":\"chat_completions\",\"stream\":false,\"status\":\"success\",\"input_tokens\":null,\"output_tokens\":null,\"estimated_cost\":null}\n",
+    )
+    .unwrap();
+    path.keep().unwrap();
+
+    let app = build_app(AppConfig {
+        proxy_keys: auth_keys(1),
         openai_api_key: Some("test-openai".into()),
         openai_base_url: server.uri(),
         usage_log_path: Some(log_path.display().to_string()),
