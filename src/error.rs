@@ -18,6 +18,8 @@ pub enum AppError {
     RateLimit(String),
     #[error("provider `{0}` is not configured")]
     ProviderNotConfigured(String),
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
     #[error("upstream error: {0}")]
     Upstream(String),
     #[error("timeout")]
@@ -45,6 +47,10 @@ impl AppError {
         Self::Upstream(message.into())
     }
 
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self::NotImplemented(message.into())
+    }
+
     pub fn request_id(&self) -> String {
         format!("req_{}", uuid::Uuid::new_v4().simple())
     }
@@ -55,6 +61,7 @@ impl AppError {
             Self::Authentication(_) => StatusCode::UNAUTHORIZED,
             Self::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::ProviderNotConfigured(_) => StatusCode::BAD_GATEWAY,
+            Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
         }
@@ -65,7 +72,10 @@ impl AppError {
             Self::ModelNotFound(_) | Self::Validation(_) => "invalid_request_error",
             Self::Authentication(_) => "authentication_error",
             Self::RateLimit(_) => "rate_limit_error",
-            Self::ProviderNotConfigured(_) | Self::Upstream(_) | Self::Timeout => "server_error",
+            Self::ProviderNotConfigured(_)
+            | Self::NotImplemented(_)
+            | Self::Upstream(_)
+            | Self::Timeout => "server_error",
         }
     }
 

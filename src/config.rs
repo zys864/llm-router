@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{env, fs, path::{Path, PathBuf}};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +85,7 @@ pub struct ProxyKeyConfig {
 pub struct AppConfig {
     pub bind_addr: String,
     pub request_timeout_secs: u64,
+    pub enable_provider_default_auth_fallback: bool,
     pub openai_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
@@ -104,6 +105,7 @@ impl Default for AppConfig {
         Self {
             bind_addr: "127.0.0.1:3000".to_string(),
             request_timeout_secs: 30,
+            enable_provider_default_auth_fallback: false,
             openai_api_key: None,
             anthropic_api_key: None,
             gemini_api_key: None,
@@ -176,6 +178,8 @@ impl AppConfig {
             .unwrap_or_default();
 
         let mut config = Self::from_parts(&bind_addr, request_timeout_secs, raw_models)?;
+        config.enable_provider_default_auth_fallback =
+            env_flag("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK");
         config.openai_api_key = env::var("OPENAI_API_KEY").ok();
         config.anthropic_api_key = env::var("ANTHROPIC_API_KEY").ok();
         config.gemini_api_key = env::var("GEMINI_API_KEY").ok();
@@ -188,6 +192,12 @@ impl AppConfig {
         config.usage_log_path = env::var("USAGE_LOG_PATH").ok();
         config.access_log_path = env::var("ACCESS_LOG_PATH").ok();
 
+        if config.enable_provider_default_auth_fallback {
+            if config.openai_api_key.is_none() {
+                config.openai_api_key = load_openai_default_api_key()?;
+            }
+        }
+
         if let Some(path) = &config.model_config_path {
             config.models = load_json_file(Path::new(path))?;
         }
@@ -198,6 +208,36 @@ impl AppConfig {
 
         Ok(config)
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        env::var(name).ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
+fn load_openai_default_api_key() -> Result<Option<String>, AppError> {
+    let Some(home) = env::var_os("HOME") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(home).join(".codex/auth.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let auth: CodexAuthFile = load_json_file(&path)?;
+    Ok(auth.tokens.access_token)
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthFile {
+    tokens: CodexAuthTokens,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthTokens {
+    access_token: Option<String>,
 }
 
 fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppError> {
@@ -213,6 +253,7 @@ fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppErr
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -278,6 +319,91 @@ mod tests {
             match previous {
                 Some(value) => env::set_var("ACCESS_LOG_PATH", value),
                 None => env::remove_var("ACCESS_LOG_PATH"),
+            }
+        }
+    }
+
+    #[test]
+    fn loads_openai_api_key_from_codex_auth_when_fallback_enabled() {
+        let _guard = env_lock().lock().unwrap();
+        let home = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        fs::write(
+            home.path().join(".codex/auth.json"),
+            r#"{
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "codex-access-token"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let previous_openai = env::var("OPENAI_API_KEY").ok();
+        let previous_home = env::var("HOME").ok();
+        let previous_fallback = env::var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK").ok();
+
+        unsafe {
+            env::remove_var("OPENAI_API_KEY");
+            env::set_var("HOME", home.path());
+            env::set_var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", "true");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(
+            config.openai_api_key.as_deref(),
+            Some("codex-access-token")
+        );
+
+        restore_env("OPENAI_API_KEY", previous_openai);
+        restore_env("HOME", previous_home);
+        restore_env(
+            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
+            previous_fallback,
+        );
+    }
+
+    #[test]
+    fn prefers_explicit_openai_api_key_over_codex_auth_fallback() {
+        let _guard = env_lock().lock().unwrap();
+        let home = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        fs::write(
+            home.path().join(".codex/auth.json"),
+            r#"{
+                "tokens": {
+                    "access_token": "codex-access-token"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let previous_openai = env::var("OPENAI_API_KEY").ok();
+        let previous_home = env::var("HOME").ok();
+        let previous_fallback = env::var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK").ok();
+
+        unsafe {
+            env::set_var("OPENAI_API_KEY", "env-openai-key");
+            env::set_var("HOME", home.path());
+            env::set_var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", "true");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.openai_api_key.as_deref(), Some("env-openai-key"));
+
+        restore_env("OPENAI_API_KEY", previous_openai);
+        restore_env("HOME", previous_home);
+        restore_env(
+            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
+            previous_fallback,
+        );
+    }
+
+    fn restore_env(name: &str, previous: Option<String>) {
+        unsafe {
+            match previous {
+                Some(value) => env::set_var(name, value),
+                None => env::remove_var(name),
             }
         }
     }

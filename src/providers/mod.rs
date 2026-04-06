@@ -88,6 +88,11 @@ impl ProviderFactory {
                     config.anthropic_base_url.clone(),
                 )),
             );
+        } else if config.enable_provider_default_auth_fallback {
+            providers.insert(
+                ProviderKind::Anthropic,
+                Arc::new(UnimplementedFallbackProvider::new(ProviderKind::Anthropic)),
+            );
         }
 
         if let Some(api_key) = &config.gemini_api_key {
@@ -99,6 +104,11 @@ impl ProviderFactory {
                     config.gemini_base_url.clone(),
                 )),
             );
+        } else if config.enable_provider_default_auth_fallback {
+            providers.insert(
+                ProviderKind::Gemini,
+                Arc::new(UnimplementedFallbackProvider::new(ProviderKind::Gemini)),
+            );
         }
 
         Self { providers }
@@ -109,6 +119,34 @@ impl ProviderFactory {
             .get(&route.provider)
             .cloned()
             .ok_or_else(|| AppError::ProviderNotConfigured(route.provider.as_str().into()))
+    }
+}
+
+struct UnimplementedFallbackProvider {
+    provider: ProviderKind,
+}
+
+impl UnimplementedFallbackProvider {
+    fn new(provider: ProviderKind) -> Self {
+        Self { provider }
+    }
+
+    fn error(&self) -> AppError {
+        AppError::not_implemented(format!(
+            "default auth fallback for provider `{}`",
+            self.provider.as_str()
+        ))
+    }
+}
+
+#[async_trait]
+impl ProviderAdapter for UnimplementedFallbackProvider {
+    async fn complete(&self, _request: UnifiedRequest) -> Result<UnifiedResponse, AppError> {
+        Err(self.error())
+    }
+
+    async fn stream(&self, _request: UnifiedRequest) -> Result<EventStream, AppError> {
+        Err(self.error())
     }
 }
 
@@ -182,5 +220,53 @@ pub(crate) fn endpoint_path(kind: ApiKind) -> &'static str {
     match kind {
         ApiKind::ChatCompletions => "/v1/chat/completions",
         ApiKind::Responses => "/v1/responses",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::ModelCapabilities, router::ModelRoute};
+
+    #[tokio::test]
+    async fn returns_not_implemented_for_anthropic_default_auth_fallback() {
+        let config = AppConfig {
+            enable_provider_default_auth_fallback: true,
+            ..AppConfig::default()
+        };
+        let factory = ProviderFactory::from_config(&config);
+        let provider = factory
+            .for_route(&ModelRoute {
+                provider: ProviderKind::Anthropic,
+                public_name: "claude-sonnet-4".into(),
+                upstream_name: "claude-sonnet-4".into(),
+                capabilities: ModelCapabilities::all(),
+            })
+            .unwrap();
+
+        let error = provider.complete(sample_request(ProviderKind::Anthropic)).await.unwrap_err();
+        assert!(matches!(error, AppError::NotImplemented(_)));
+    }
+
+    fn sample_request(provider: ProviderKind) -> UnifiedRequest {
+        UnifiedRequest {
+            request_id: "req_123".into(),
+            api_kind: ApiKind::ChatCompletions,
+            route: ModelRoute {
+                provider,
+                public_name: "sample".into(),
+                upstream_name: "sample".into(),
+                capabilities: ModelCapabilities::all(),
+            },
+            model: "sample".into(),
+            messages: vec![UnifiedMessage {
+                role: UnifiedRole::User,
+                content: "hello".into(),
+            }],
+            temperature: None,
+            max_output_tokens: None,
+            stream: false,
+            caller_id: None,
+        }
     }
 }
