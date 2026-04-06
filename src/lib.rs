@@ -22,6 +22,7 @@ use app_state::AppState;
 use axum::{Router, routing::get};
 use config::AppConfig;
 use providers::ProviderFactory;
+use tower_http::trace::TraceLayer;
 use {
     access_log::AccessLogger, auth::AuthService, quota::QuotaStore, usage::UsageLogger,
     usage_aggregate::UsageAggregator,
@@ -62,4 +63,5 @@ pub async fn build_app(config: AppConfig) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(api_router(state))
+        .layer(TraceLayer::new_for_http())
 }

@@ -234,17 +234,13 @@ fn load_openai_default_api_key() -> Result<Option<String>, AppError> {
     }
 
     let auth: CodexAuthFile = load_json_file(&path)?;
-    Ok(auth.tokens.access_token)
+    Ok(auth.openai_api_key.filter(|value| !value.trim().is_empty()))
 }
 
 #[derive(Debug, Deserialize)]
 struct CodexAuthFile {
-    tokens: CodexAuthTokens,
-}
-
-#[derive(Debug, Deserialize)]
-struct CodexAuthTokens {
-    access_token: Option<String>,
+    #[serde(rename = "OPENAI_API_KEY")]
+    openai_api_key: Option<String>,
 }
 
 fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppError> {
@@ -339,6 +335,7 @@ mod tests {
             home.path().join(".codex/auth.json"),
             r#"{
                 "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": "sk-from-codex-auth",
                 "tokens": {
                     "access_token": "codex-access-token"
                 }
@@ -359,7 +356,7 @@ mod tests {
         let config = AppConfig::from_env().unwrap();
         assert_eq!(
             config.openai_api_key.as_deref(),
-            Some("codex-access-token")
+            Some("sk-from-codex-auth")
         );
 
         restore_env("OPENAI_API_KEY", previous_openai);
@@ -378,6 +375,7 @@ mod tests {
         fs::write(
             home.path().join(".codex/auth.json"),
             r#"{
+                "OPENAI_API_KEY": "sk-from-codex-auth",
                 "tokens": {
                     "access_token": "codex-access-token"
                 }
@@ -414,6 +412,7 @@ mod tests {
         fs::write(
             home.path().join(".codex/auth.json"),
             r#"{
+                "OPENAI_API_KEY": "sk-from-codex-auth",
                 "tokens": {
                     "access_token": "codex-access-token"
                 }
@@ -442,7 +441,7 @@ mod tests {
         let config = AppConfig::from_env().unwrap();
         assert_eq!(
             config.openai_api_key.as_deref(),
-            Some("codex-access-token")
+            Some("sk-from-codex-auth")
         );
         assert_eq!(config.model_config_path, None);
         assert_eq!(config.proxy_api_keys_path, None);
@@ -459,6 +458,44 @@ mod tests {
         restore_env("PROXY_API_KEYS_PATH", previous_proxy_keys);
         restore_env("USAGE_LOG_PATH", previous_usage_log);
         restore_env("ACCESS_LOG_PATH", previous_access_log);
+    }
+
+    #[test]
+    fn does_not_treat_codex_access_token_as_openai_api_key() {
+        let _guard = env_lock().lock().unwrap();
+        let home = tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        fs::write(
+            home.path().join(".codex/auth.json"),
+            r#"{
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": null,
+                "tokens": {
+                    "access_token": "codex-access-token"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let previous_openai = env::var("OPENAI_API_KEY").ok();
+        let previous_home = env::var("HOME").ok();
+        let previous_fallback = env::var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK").ok();
+
+        unsafe {
+            env::remove_var("OPENAI_API_KEY");
+            env::set_var("HOME", home.path());
+            env::set_var("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK", "true");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.openai_api_key, None);
+
+        restore_env("OPENAI_API_KEY", previous_openai);
+        restore_env("HOME", previous_home);
+        restore_env(
+            "ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK",
+            previous_fallback,
+        );
     }
 
     fn restore_env(name: &str, previous: Option<String>) {
