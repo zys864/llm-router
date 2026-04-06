@@ -85,6 +85,7 @@ pub struct ProxyKeyConfig {
 pub struct AppConfig {
     pub bind_addr: String,
     pub request_timeout_secs: u64,
+    pub upstream_proxy_url: Option<String>,
     pub enable_provider_default_auth_fallback: bool,
     pub openai_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
@@ -105,6 +106,7 @@ impl Default for AppConfig {
         Self {
             bind_addr: "127.0.0.1:3000".to_string(),
             request_timeout_secs: 30,
+            upstream_proxy_url: None,
             enable_provider_default_auth_fallback: false,
             openai_api_key: None,
             anthropic_api_key: None,
@@ -178,6 +180,7 @@ impl AppConfig {
             .unwrap_or_default();
 
         let mut config = Self::from_parts(&bind_addr, request_timeout_secs, raw_models)?;
+        config.upstream_proxy_url = env_var_non_empty("UPSTREAM_PROXY_URL");
         config.enable_provider_default_auth_fallback =
             env_flag("ENABLE_PROVIDER_DEFAULT_AUTH_FALLBACK");
         config.openai_api_key = env_var_non_empty("OPENAI_API_KEY");
@@ -327,6 +330,23 @@ mod tests {
     }
 
     #[test]
+    fn loads_upstream_proxy_url_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        let previous = env::var("UPSTREAM_PROXY_URL").ok();
+        unsafe {
+            env::set_var("UPSTREAM_PROXY_URL", "http://127.0.0.1:7890");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(
+            config.upstream_proxy_url.as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+
+        restore_env("UPSTREAM_PROXY_URL", previous);
+    }
+
+    #[test]
     fn loads_openai_api_key_from_codex_auth_when_fallback_enabled() {
         let _guard = env_lock().lock().unwrap();
         let home = tempdir().unwrap();
@@ -427,6 +447,7 @@ mod tests {
         let previous_proxy_keys = env::var("PROXY_API_KEYS_PATH").ok();
         let previous_usage_log = env::var("USAGE_LOG_PATH").ok();
         let previous_access_log = env::var("ACCESS_LOG_PATH").ok();
+        let previous_upstream_proxy = env::var("UPSTREAM_PROXY_URL").ok();
 
         unsafe {
             env::set_var("OPENAI_API_KEY", "");
@@ -436,6 +457,7 @@ mod tests {
             env::set_var("PROXY_API_KEYS_PATH", "");
             env::set_var("USAGE_LOG_PATH", "");
             env::set_var("ACCESS_LOG_PATH", "");
+            env::set_var("UPSTREAM_PROXY_URL", "");
         }
 
         let config = AppConfig::from_env().unwrap();
@@ -447,6 +469,7 @@ mod tests {
         assert_eq!(config.proxy_api_keys_path, None);
         assert_eq!(config.usage_log_path, None);
         assert_eq!(config.access_log_path, None);
+        assert_eq!(config.upstream_proxy_url, None);
 
         restore_env("OPENAI_API_KEY", previous_openai);
         restore_env("HOME", previous_home);
@@ -458,6 +481,7 @@ mod tests {
         restore_env("PROXY_API_KEYS_PATH", previous_proxy_keys);
         restore_env("USAGE_LOG_PATH", previous_usage_log);
         restore_env("ACCESS_LOG_PATH", previous_access_log);
+        restore_env("UPSTREAM_PROXY_URL", previous_upstream_proxy);
     }
 
     #[test]

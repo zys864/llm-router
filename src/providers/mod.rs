@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -60,11 +60,17 @@ pub struct ProviderFactory {
 }
 
 impl ProviderFactory {
-    pub fn from_config(config: &AppConfig) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.request_timeout_secs))
+    pub fn from_config(config: &AppConfig) -> Result<Self, AppError> {
+        let mut client = Client::builder().timeout(Duration::from_secs(config.request_timeout_secs));
+        if let Some(proxy_url) = &config.upstream_proxy_url {
+            let proxy = Proxy::all(proxy_url).map_err(|error| {
+                AppError::validation(format!("invalid UPSTREAM_PROXY_URL `{proxy_url}`: {error}"))
+            })?;
+            client = client.proxy(proxy);
+        }
+        let client = client
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(|error| AppError::upstream(format!("failed to build reqwest client: {error}")))?;
 
         let mut providers: HashMap<ProviderKind, Arc<dyn ProviderAdapter>> = HashMap::new();
 
@@ -111,7 +117,7 @@ impl ProviderFactory {
             );
         }
 
-        Self { providers }
+        Ok(Self { providers })
     }
 
     pub fn for_route(&self, route: &ModelRoute) -> Result<Arc<dyn ProviderAdapter>, AppError> {
@@ -234,7 +240,7 @@ mod tests {
             enable_provider_default_auth_fallback: true,
             ..AppConfig::default()
         };
-        let factory = ProviderFactory::from_config(&config);
+        let factory = ProviderFactory::from_config(&config).unwrap();
         let provider = factory
             .for_route(&ModelRoute {
                 provider: ProviderKind::Anthropic,
@@ -246,6 +252,21 @@ mod tests {
 
         let error = provider.complete(sample_request(ProviderKind::Anthropic)).await.unwrap_err();
         assert!(matches!(error, AppError::NotImplemented(_)));
+    }
+
+    #[test]
+    fn returns_validation_error_for_invalid_upstream_proxy_url() {
+        let config = AppConfig {
+            upstream_proxy_url: Some("://bad-proxy".into()),
+            ..AppConfig::default()
+        };
+
+        let error = match ProviderFactory::from_config(&config) {
+            Ok(_) => panic!("expected invalid proxy config to fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(error.to_string().contains("UPSTREAM_PROXY_URL"));
     }
 
     fn sample_request(provider: ProviderKind) -> UnifiedRequest {

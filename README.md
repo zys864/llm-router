@@ -47,6 +47,7 @@ Environment variables:
 - `ANTHROPIC_BASE_URL`
 - `GEMINI_BASE_URL`
 - `MODEL_MAPPINGS`
+- `UPSTREAM_PROXY_URL`
 - `MODEL_CONFIG_PATH`
 - `PROXY_API_KEYS_PATH`
 - `USAGE_LOG_PATH`
@@ -123,6 +124,7 @@ curl -N -X POST http://127.0.0.1:3000/v1/chat/completions \
 
 - Streaming is normalized into OpenAI-style SSE chunks.
 - `MODEL_CONFIG_PATH` enables multi-target model definitions and fallback order.
+- `UPSTREAM_PROXY_URL` routes all upstream provider traffic through an explicit proxy.
 - `PROXY_API_KEYS_PATH` enables bearer auth and request quotas.
 - `USAGE_LOG_PATH` appends one terminal JSONL record per request.
 - `ACCESS_LOG_PATH` appends structured JSONL access events for request start, upstream attempts, and request finish.

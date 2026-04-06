@@ -30,7 +30,8 @@ use {
 
 pub async fn build_app(config: AppConfig) -> Router {
     let registry = models::ModelRegistry::from_configs(&config.models);
-    let provider_factory = ProviderFactory::from_config(&config);
+    let provider_factory = ProviderFactory::from_config(&config)
+        .expect("failed to initialize provider factory");
     let auth = AuthService::new(config.proxy_keys.clone());
     let quota = QuotaStore::new(config.proxy_keys.clone());
     let usage_logger = UsageLogger::new(config.usage_log_path.clone().map(Into::into))
