@@ -8,7 +8,7 @@ use crate::{
     config::AppConfig,
     domain::{
         request::{ApiKind, UnifiedMessage, UnifiedRequest, UnifiedRole},
-        response::{StreamEvent, UnifiedResponse, UnifiedUsage},
+        response::{EventStream, UnifiedResponse, UnifiedUsage},
     },
     error::AppError,
     router::ModelRoute,
@@ -17,8 +17,10 @@ use crate::{
 pub mod anthropic;
 pub mod gemini;
 pub mod openai;
+pub mod streaming;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     OpenAi,
     Anthropic,
@@ -49,7 +51,7 @@ impl ProviderKind {
 #[async_trait]
 pub trait ProviderAdapter: Send + Sync {
     async fn complete(&self, request: UnifiedRequest) -> Result<UnifiedResponse, AppError>;
-    async fn stream(&self, request: UnifiedRequest) -> Result<Vec<StreamEvent>, AppError>;
+    async fn stream(&self, request: UnifiedRequest) -> Result<EventStream, AppError>;
 }
 
 #[derive(Clone)]
@@ -149,14 +151,6 @@ pub(crate) fn non_system_messages(messages: &[UnifiedMessage]) -> Vec<&UnifiedMe
         .iter()
         .filter(|message| message.role != UnifiedRole::System)
         .collect()
-}
-
-pub(crate) fn simple_stream(response: &UnifiedResponse) -> Vec<StreamEvent> {
-    vec![
-        StreamEvent::Started,
-        StreamEvent::DeltaText(response.text.clone()),
-        StreamEvent::Completed,
-    ]
 }
 
 pub(crate) fn usage(input_tokens: Option<u32>, output_tokens: Option<u32>) -> Option<UnifiedUsage> {

@@ -8,10 +8,7 @@ use crate::{
         response::UnifiedResponse,
     },
     error::AppError,
-    providers::{
-        ProviderAdapter, endpoint_path, json_string, json_u32, map_reqwest_error, simple_stream,
-        usage,
-    },
+    providers::{ProviderAdapter, endpoint_path, json_string, json_u32, map_reqwest_error, usage},
 };
 
 pub struct OpenAiProvider {
@@ -37,7 +34,7 @@ impl OpenAiProvider {
             "temperature": request.temperature,
             "max_tokens": request.max_output_tokens,
             "max_output_tokens": request.max_output_tokens,
-            "stream": false
+            "stream": request.stream
         })
     }
 
@@ -91,10 +88,42 @@ impl ProviderAdapter for OpenAiProvider {
     async fn stream(
         &self,
         mut request: UnifiedRequest,
-    ) -> Result<Vec<crate::domain::response::StreamEvent>, AppError> {
-        request.stream = false;
-        let response = self.execute(request).await?;
-        Ok(simple_stream(&response))
+    ) -> Result<crate::domain::response::EventStream, AppError> {
+        request.stream = true;
+        let response = self
+            .client
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                endpoint_path(request.api_kind)
+            ))
+            .bearer_auth(&self.api_key)
+            .json(&self.build_request_body(&request))
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(AppError::upstream(
+                response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "stream failed".into()),
+            ));
+        }
+
+        Ok(crate::providers::streaming::sse_json_stream(
+            response.bytes_stream(),
+            |json| {
+                crate::providers::json_string(&json, &["choices", "0", "delta", "content"])
+                    .map(crate::domain::response::StreamEvent::TextDelta)
+                    .or_else(|| {
+                        crate::providers::json_string(&json, &["delta", "content"])
+                            .map(crate::domain::response::StreamEvent::TextDelta)
+                    })
+            },
+        ))
     }
 }
 
@@ -135,7 +164,9 @@ mod tests {
                 provider: ProviderKind::OpenAi,
                 public_name: "gpt-4.1".into(),
                 upstream_name: "gpt-4.1".into(),
+                capabilities: crate::config::ModelCapabilities::all(),
             },
+            model: "gpt-4.1".into(),
             messages: vec![UnifiedMessage {
                 role: UnifiedRole::User,
                 content: "hello".into(),
@@ -143,6 +174,7 @@ mod tests {
             temperature: Some(0.2),
             max_output_tokens: Some(128),
             stream: false,
+            caller_id: None,
         }
     }
 }

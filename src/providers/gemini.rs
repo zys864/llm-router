@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::{
     domain::{request::UnifiedRequest, response::UnifiedResponse},
     error::AppError,
-    providers::{ProviderAdapter, json_string, json_u32, map_reqwest_error, simple_stream, usage},
+    providers::{ProviderAdapter, json_string, json_u32, map_reqwest_error, usage},
 };
 
 pub struct GeminiProvider {
@@ -78,11 +78,39 @@ impl ProviderAdapter for GeminiProvider {
 
     async fn stream(
         &self,
-        mut request: UnifiedRequest,
-    ) -> Result<Vec<crate::domain::response::StreamEvent>, AppError> {
-        request.stream = false;
-        let response = self.execute(request).await?;
-        Ok(simple_stream(&response))
+        request: UnifiedRequest,
+    ) -> Result<crate::domain::response::EventStream, AppError> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+                self.base_url, request.route.upstream_name, self.api_key
+            ))
+            .json(&self.build_request_body(&request))
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(AppError::upstream(
+                response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "stream failed".into()),
+            ));
+        }
+
+        Ok(crate::providers::streaming::sse_json_stream(
+            response.bytes_stream(),
+            |json| {
+                crate::providers::json_string(
+                    &json,
+                    &["candidates", "0", "content", "parts", "0", "text"],
+                )
+                .map(crate::domain::response::StreamEvent::TextDelta)
+            },
+        ))
     }
 }
 
@@ -114,7 +142,9 @@ mod tests {
                 provider: ProviderKind::Gemini,
                 public_name: "gemini-2.5-pro".into(),
                 upstream_name: "gemini-2.5-pro".into(),
+                capabilities: crate::config::ModelCapabilities::all(),
             },
+            model: "gemini-2.5-pro".into(),
             messages: vec![UnifiedMessage {
                 role: UnifiedRole::User,
                 content: "hello".into(),
@@ -122,6 +152,7 @@ mod tests {
             temperature: Some(0.2),
             max_output_tokens: Some(128),
             stream: false,
+            caller_id: None,
         }
     }
 }

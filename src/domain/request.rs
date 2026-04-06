@@ -30,11 +30,13 @@ pub enum ApiKind {
 pub struct UnifiedRequest {
     pub request_id: String,
     pub api_kind: ApiKind,
+    pub model: String,
     pub route: ModelRoute,
     pub messages: Vec<UnifiedMessage>,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
     pub stream: bool,
+    pub caller_id: Option<String>,
 }
 
 impl UnifiedRequest {
@@ -50,6 +52,7 @@ impl UnifiedRequest {
         Ok(Self {
             request_id: request_id.into(),
             api_kind: ApiKind::ChatCompletions,
+            model: route.public_name.clone(),
             route,
             messages: request
                 .messages
@@ -59,6 +62,7 @@ impl UnifiedRequest {
             temperature: request.temperature,
             max_output_tokens: request.max_tokens,
             stream: request.stream.unwrap_or(false),
+            caller_id: None,
         })
     }
 
@@ -74,6 +78,7 @@ impl UnifiedRequest {
         Ok(Self {
             request_id: request_id.into(),
             api_kind: ApiKind::Responses,
+            model: route.public_name.clone(),
             route,
             messages: vec![UnifiedMessage {
                 role: UnifiedRole::User,
@@ -82,7 +87,13 @@ impl UnifiedRequest {
             temperature: request.temperature,
             max_output_tokens: request.max_output_tokens,
             stream: request.stream.unwrap_or(false),
+            caller_id: None,
         })
+    }
+
+    pub fn with_caller(mut self, caller_id: Option<String>) -> Self {
+        self.caller_id = caller_id;
+        self
     }
 
     fn from_chat_message(message: ChatMessage) -> Result<UnifiedMessage, AppError> {
@@ -113,7 +124,7 @@ mod tests {
         };
 
         let domain = UnifiedRequest::from_chat(request, sample_route(), "req_123").unwrap();
-        assert_eq!(domain.route.public_name, "gpt-4.1");
+        assert_eq!(domain.model, "gpt-4.1");
         assert_eq!(domain.messages.len(), 1);
     }
 
@@ -122,6 +133,7 @@ mod tests {
             provider: ProviderKind::OpenAi,
             public_name: "gpt-4.1".into(),
             upstream_name: "gpt-4.1".into(),
+            capabilities: crate::config::ModelCapabilities::all(),
         }
     }
 }

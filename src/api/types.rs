@@ -51,6 +51,13 @@ pub struct ModelObject {
     pub id: String,
     pub object: String,
     pub owned_by: String,
+    pub metadata: ModelMetadataObject,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelMetadataObject {
+    pub streaming: bool,
+    pub target_count: usize,
 }
 
 impl ModelsResponse {
@@ -63,7 +70,18 @@ impl ModelsResponse {
                 .map(|record| ModelObject {
                     id: record.public_name.clone(),
                     object: "model".into(),
-                    owned_by: record.provider.as_str().into(),
+                    owned_by: record
+                        .targets
+                        .first()
+                        .map(|target| target.provider.as_str().to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    metadata: ModelMetadataObject {
+                        streaming: record
+                            .targets
+                            .iter()
+                            .any(|target| target.capabilities.streaming),
+                        target_count: record.targets.len(),
+                    },
                 })
                 .collect(),
         }

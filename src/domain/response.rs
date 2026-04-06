@@ -1,4 +1,9 @@
+use std::pin::Pin;
+
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+
+use crate::error::AppError;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UnifiedUsage {
@@ -19,8 +24,11 @@ pub struct UnifiedResponse {
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
     Started,
-    DeltaText(String),
+    TextDelta(String),
     Usage(UnifiedUsage),
     Completed,
     Error(String),
 }
+
+pub type EventResult = Result<StreamEvent, AppError>;
+pub type EventStream = Pin<Box<dyn Stream<Item = EventResult> + Send>>;

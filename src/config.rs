@@ -1,12 +1,41 @@
-use std::env;
+use std::{env, fs, path::Path};
+
+use serde::{Deserialize, Serialize};
 
 use crate::{error::AppError, providers::ProviderKind};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelConfig {
-    pub public_name: String,
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ModelCapabilities {
+    pub chat_completions: bool,
+    pub responses: bool,
+    pub streaming: bool,
+}
+
+impl ModelCapabilities {
+    pub fn all() -> Self {
+        Self {
+            chat_completions: true,
+            responses: true,
+            streaming: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ModelTargetConfig {
     pub provider: ProviderKind,
     pub upstream_name: String,
+    pub priority: u32,
+    #[serde(default = "ModelCapabilities::all")]
+    pub capabilities: ModelCapabilities,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ModelConfig {
+    pub public_name: String,
+    #[serde(default = "ModelCapabilities::all")]
+    pub capabilities: ModelCapabilities,
+    pub targets: Vec<ModelTargetConfig>,
 }
 
 impl ModelConfig {
@@ -25,10 +54,22 @@ impl ModelConfig {
 
         Ok(Self {
             public_name: public_name.to_string(),
-            provider: ProviderKind::parse(provider)?,
-            upstream_name: upstream_name.to_string(),
+            capabilities: ModelCapabilities::all(),
+            targets: vec![ModelTargetConfig {
+                provider: ProviderKind::parse(provider)?,
+                upstream_name: upstream_name.to_string(),
+                priority: 100,
+                capabilities: ModelCapabilities::all(),
+            }],
         })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProxyKeyConfig {
+    pub id: String,
+    pub api_key: String,
+    pub max_requests: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +82,10 @@ pub struct AppConfig {
     pub openai_base_url: String,
     pub anthropic_base_url: String,
     pub gemini_base_url: String,
+    pub model_config_path: Option<String>,
+    pub proxy_api_keys_path: Option<String>,
+    pub usage_log_path: Option<String>,
+    pub proxy_keys: Vec<ProxyKeyConfig>,
     pub models: Vec<ModelConfig>,
 }
 
@@ -55,6 +100,10 @@ impl Default for AppConfig {
             openai_base_url: "https://api.openai.com".to_string(),
             anthropic_base_url: "https://api.anthropic.com".to_string(),
             gemini_base_url: "https://generativelanguage.googleapis.com".to_string(),
+            model_config_path: None,
+            proxy_api_keys_path: None,
+            usage_log_path: None,
+            proxy_keys: vec![],
             models: vec![],
         }
     }
@@ -75,6 +124,26 @@ impl AppConfig {
             .into_iter()
             .map(ModelConfig::parse)
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(config)
+    }
+
+    pub fn from_test_paths(
+        model_config_path: impl AsRef<Path>,
+        proxy_keys_path: Option<impl AsRef<Path>>,
+        usage_log_path: Option<impl AsRef<Path>>,
+    ) -> Result<Self, AppError> {
+        let mut config = Self::default();
+        config.model_config_path = Some(model_config_path.as_ref().display().to_string());
+        config.proxy_api_keys_path = proxy_keys_path
+            .as_ref()
+            .map(|path| path.as_ref().display().to_string());
+        config.usage_log_path = usage_log_path
+            .as_ref()
+            .map(|path| path.as_ref().display().to_string());
+        config.models = load_json_file(model_config_path.as_ref())?;
+        if let Some(path) = proxy_keys_path {
+            config.proxy_keys = load_json_file(path.as_ref())?;
+        }
         Ok(config)
     }
 
@@ -103,8 +172,29 @@ impl AppConfig {
         config.anthropic_base_url =
             env::var("ANTHROPIC_BASE_URL").unwrap_or(config.anthropic_base_url);
         config.gemini_base_url = env::var("GEMINI_BASE_URL").unwrap_or(config.gemini_base_url);
+        config.model_config_path = env::var("MODEL_CONFIG_PATH").ok();
+        config.proxy_api_keys_path = env::var("PROXY_API_KEYS_PATH").ok();
+        config.usage_log_path = env::var("USAGE_LOG_PATH").ok();
+
+        if let Some(path) = &config.model_config_path {
+            config.models = load_json_file(Path::new(path))?;
+        }
+
+        if let Some(path) = &config.proxy_api_keys_path {
+            config.proxy_keys = load_json_file(Path::new(path))?;
+        }
+
         Ok(config)
     }
+}
+
+fn load_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AppError> {
+    let body = fs::read_to_string(path).map_err(|error| {
+        AppError::validation(format!("failed to read {}: {error}", path.display()))
+    })?;
+    serde_json::from_str(&body).map_err(|error| {
+        AppError::validation(format!("failed to parse {}: {error}", path.display()))
+    })
 }
 
 #[cfg(test)]
@@ -119,6 +209,29 @@ mod tests {
 
         assert_eq!(config.models.len(), 1);
         assert_eq!(config.models[0].public_name, "gpt-4.1");
-        assert_eq!(config.models[0].provider, ProviderKind::OpenAi);
+        assert_eq!(config.models[0].targets[0].provider, ProviderKind::OpenAi);
+    }
+
+    #[test]
+    fn loads_model_catalog_from_json_file() {
+        let config =
+            AppConfig::from_test_paths("examples/model-config.json", None::<&str>, None::<&str>)
+                .unwrap();
+
+        assert_eq!(config.models.len(), 3);
+        assert_eq!(config.models[0].targets.len(), 2);
+    }
+
+    #[test]
+    fn loads_proxy_keys_from_json_file() {
+        let config = AppConfig::from_test_paths(
+            "examples/model-config.json",
+            Some("examples/proxy-keys.json"),
+            None::<&str>,
+        )
+        .unwrap();
+
+        assert_eq!(config.proxy_keys.len(), 1);
+        assert_eq!(config.proxy_keys[0].id, "team-alpha");
     }
 }

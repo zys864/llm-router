@@ -12,6 +12,10 @@ pub enum AppError {
     ModelNotFound(String),
     #[error("validation error: {0}")]
     Validation(String),
+    #[error("authentication error: {0}")]
+    Authentication(String),
+    #[error("rate limit exceeded: {0}")]
+    RateLimit(String),
     #[error("provider `{0}` is not configured")]
     ProviderNotConfigured(String),
     #[error("upstream error: {0}")]
@@ -29,6 +33,14 @@ impl AppError {
         Self::Validation(message.into())
     }
 
+    pub fn authentication(message: impl Into<String>) -> Self {
+        Self::Authentication(message.into())
+    }
+
+    pub fn rate_limit(message: impl Into<String>) -> Self {
+        Self::RateLimit(message.into())
+    }
+
     pub fn upstream(message: impl Into<String>) -> Self {
         Self::Upstream(message.into())
     }
@@ -40,6 +52,8 @@ impl AppError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::ModelNotFound(_) | Self::Validation(_) => StatusCode::BAD_REQUEST,
+            Self::Authentication(_) => StatusCode::UNAUTHORIZED,
+            Self::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
             Self::ProviderNotConfigured(_) => StatusCode::BAD_GATEWAY,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
@@ -49,6 +63,8 @@ impl AppError {
     pub fn error_type(&self) -> &'static str {
         match self {
             Self::ModelNotFound(_) | Self::Validation(_) => "invalid_request_error",
+            Self::Authentication(_) => "authentication_error",
+            Self::RateLimit(_) => "rate_limit_error",
             Self::ProviderNotConfigured(_) | Self::Upstream(_) | Self::Timeout => "server_error",
         }
     }

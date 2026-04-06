@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use axum::Router;
 
-use crate::app_state::AppState;
+use axum::http::HeaderMap;
+
+use crate::{app_state::AppState, auth::AuthenticatedCaller, error::AppError};
 
 pub mod chat_completions;
 pub mod models;
@@ -15,4 +17,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(chat_completions::router())
         .merge(responses::router())
         .with_state(state)
+}
+
+pub fn authenticate_request(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<Option<AuthenticatedCaller>, AppError> {
+    state.auth.authenticate_header(headers)
 }

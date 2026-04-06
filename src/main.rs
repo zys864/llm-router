@@ -10,7 +10,7 @@ async fn main() {
     let config = AppConfig::from_env().expect("failed to load config");
     let addr: SocketAddr = config.bind_addr.parse().expect("invalid bind address");
 
-    let app = build_app(config);
+    let app = build_app(config).await;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind tcp listener");
@@ -25,6 +25,6 @@ mod tests {
 
     #[tokio::test]
     async fn app_builds_without_panicking() {
-        let _ = build_app(AppConfig::default());
+        let _ = build_app(AppConfig::default()).await;
     }
 }

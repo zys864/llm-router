@@ -1,0 +1,7 @@
+[
+  {
+    "id": "team-alpha",
+    "api_key": "lr_live_alpha",
+    "max_requests": 1000
+  }
+]

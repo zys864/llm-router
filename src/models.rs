@@ -1,12 +1,23 @@
 use serde::Serialize;
 
-use crate::{config::ModelConfig, providers::ProviderKind};
+use crate::{
+    config::{ModelCapabilities, ModelConfig},
+    providers::ProviderKind,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ModelTarget {
+    pub provider: ProviderKind,
+    pub upstream_name: String,
+    pub priority: u32,
+    pub capabilities: ModelCapabilities,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ModelRecord {
     pub public_name: String,
-    pub provider: ProviderKind,
-    pub upstream_name: String,
+    pub capabilities: ModelCapabilities,
+    pub targets: Vec<ModelTarget>,
 }
 
 impl ModelRecord {
@@ -17,8 +28,13 @@ impl ModelRecord {
     ) -> Self {
         Self {
             public_name: public_name.into(),
-            provider,
-            upstream_name: upstream_name.into(),
+            capabilities: ModelCapabilities::all(),
+            targets: vec![ModelTarget {
+                provider,
+                upstream_name: upstream_name.into(),
+                priority: 100,
+                capabilities: ModelCapabilities::all(),
+            }],
         }
     }
 }
@@ -37,12 +53,19 @@ impl ModelRegistry {
         Self::new(
             configs
                 .iter()
-                .map(|config| {
-                    ModelRecord::new(
-                        config.public_name.clone(),
-                        config.provider,
-                        config.upstream_name.clone(),
-                    )
+                .map(|config| ModelRecord {
+                    public_name: config.public_name.clone(),
+                    capabilities: config.capabilities.clone(),
+                    targets: config
+                        .targets
+                        .iter()
+                        .map(|target| ModelTarget {
+                            provider: target.provider,
+                            upstream_name: target.upstream_name.clone(),
+                            priority: target.priority,
+                            capabilities: target.capabilities.clone(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         )

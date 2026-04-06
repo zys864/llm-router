@@ -9,8 +9,11 @@ An OpenRouter-style LLM proxy written in Rust.
 - OpenAI-compatible `POST /v1/responses`
 - Config-driven model aliasing
 - Deterministic routing to OpenAI, Anthropic, and Gemini
+- Fallback routing across multiple upstream targets
+- Optional proxy bearer auth and request quotas
+- Append-only usage logging to JSONL
 - Unified JSON error envelopes
-- OpenAI-style SSE output for streaming requests
+- Real upstream streaming normalized into OpenAI-style SSE output
 - Unit and integration coverage with mocked upstream providers
 
 ## Quick Start
@@ -42,6 +45,9 @@ Environment variables:
 - `ANTHROPIC_BASE_URL`
 - `GEMINI_BASE_URL`
 - `MODEL_MAPPINGS`
+- `MODEL_CONFIG_PATH`
+- `PROXY_API_KEYS_PATH`
+- `USAGE_LOG_PATH`
 
 `MODEL_MAPPINGS` is a comma-separated list in this format:
 
@@ -54,6 +60,9 @@ Example:
 ```text
 gpt-4.1=openai:gpt-4.1,claude-sonnet-4=anthropic:claude-sonnet-4-20250514,gemini-2.5-pro=gemini:gemini-2.5-pro
 ```
+
+For richer routing, auth, and quota setup, use the example files in
+`examples/model-config.json` and `examples/proxy-keys.json`.
 
 ## Example Requests
 
@@ -104,5 +113,7 @@ curl -N -X POST http://127.0.0.1:3000/v1/chat/completions \
 ## Notes
 
 - Streaming is normalized into OpenAI-style SSE chunks.
-- Provider streaming is implemented as normalized proxy output for the MVP.
+- `MODEL_CONFIG_PATH` enables multi-target model definitions and fallback order.
+- `PROXY_API_KEYS_PATH` enables bearer auth and request quotas.
+- `USAGE_LOG_PATH` appends one terminal JSONL record per request.
 - Requests for unknown models fail before any upstream call is attempted.

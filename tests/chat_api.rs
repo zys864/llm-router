@@ -71,7 +71,7 @@ async fn proxies_chat_completion_to_gemini_adapter() {
 
 #[tokio::test]
 async fn returns_not_found_for_unknown_model() {
-    let app = common::models_only_app();
+    let app = common::models_only_app().await;
     let response = common::post_json(
         app,
         "/v1/chat/completions",
@@ -101,4 +101,18 @@ async fn returns_timeout_error_for_slow_upstream() {
 
     assert_eq!(response.status, 504);
     assert!(response.body.contains("\"request_id\""));
+}
+
+#[tokio::test]
+async fn falls_back_to_second_target_after_upstream_failure() {
+    let app = common::fallback_openai_then_anthropic_app().await;
+    let response = common::post_json(
+        app,
+        "/v1/chat/completions",
+        common::sample_chat_body("smart-fallback"),
+    )
+    .await;
+
+    assert_eq!(response.status, 200);
+    assert!(response.body.contains("anthropic says hi"));
 }

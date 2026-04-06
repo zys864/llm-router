@@ -7,7 +7,7 @@ use crate::{
     error::AppError,
     providers::{
         ProviderAdapter, json_string, json_u32, map_reqwest_error, non_system_messages,
-        simple_stream, system_prompt, usage,
+        system_prompt, usage,
     },
 };
 
@@ -80,11 +80,52 @@ impl ProviderAdapter for AnthropicProvider {
 
     async fn stream(
         &self,
-        mut request: UnifiedRequest,
-    ) -> Result<Vec<crate::domain::response::StreamEvent>, AppError> {
-        request.stream = false;
-        let response = self.execute(request).await?;
-        Ok(simple_stream(&response))
+        request: UnifiedRequest,
+    ) -> Result<crate::domain::response::EventStream, AppError> {
+        let response = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "stream": true,
+                "model": request.route.upstream_name,
+                "system": system_prompt(&request.messages),
+                "messages": non_system_messages(&request.messages)
+                    .into_iter()
+                    .map(|message| serde_json::json!({
+                        "role": format!("{:?}", message.role).to_lowercase(),
+                        "content": [{ "type": "text", "text": message.content }]
+                    }))
+                    .collect::<Vec<_>>(),
+                "temperature": request.temperature,
+                "max_tokens": request.max_output_tokens.unwrap_or(1024)
+            }))
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(AppError::upstream(
+                response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "stream failed".into()),
+            ));
+        }
+
+        Ok(crate::providers::streaming::sse_json_stream(
+            response.bytes_stream(),
+            |json| {
+                crate::providers::json_string(&json, &["delta", "text"])
+                    .map(crate::domain::response::StreamEvent::TextDelta)
+                    .or_else(|| {
+                        crate::providers::json_string(&json, &["content_block", "text"])
+                            .map(crate::domain::response::StreamEvent::TextDelta)
+                    })
+            },
+        ))
     }
 }
 
@@ -116,7 +157,9 @@ mod tests {
                 provider: ProviderKind::Anthropic,
                 public_name: "claude-sonnet-4".into(),
                 upstream_name: "claude-sonnet-4-20250514".into(),
+                capabilities: crate::config::ModelCapabilities::all(),
             },
+            model: "claude-sonnet-4".into(),
             messages: vec![UnifiedMessage {
                 role: UnifiedRole::User,
                 content: "hello".into(),
@@ -124,6 +167,7 @@ mod tests {
             temperature: Some(0.2),
             max_output_tokens: Some(128),
             stream: false,
+            caller_id: None,
         }
     }
 }

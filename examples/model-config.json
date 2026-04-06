@@ -1,0 +1,72 @@
+[
+  {
+    "public_name": "claude-sonnet-4",
+    "capabilities": {
+      "chat_completions": true,
+      "responses": true,
+      "streaming": true
+    },
+    "targets": [
+      {
+        "provider": "anthropic",
+        "upstream_name": "claude-sonnet-4-20250514",
+        "priority": 100,
+        "capabilities": {
+          "chat_completions": true,
+          "responses": true,
+          "streaming": true
+        }
+      },
+      {
+        "provider": "openai",
+        "upstream_name": "gpt-4.1",
+        "priority": 50,
+        "capabilities": {
+          "chat_completions": true,
+          "responses": true,
+          "streaming": true
+        }
+      }
+    ]
+  },
+  {
+    "public_name": "gpt-4.1",
+    "capabilities": {
+      "chat_completions": true,
+      "responses": true,
+      "streaming": true
+    },
+    "targets": [
+      {
+        "provider": "openai",
+        "upstream_name": "gpt-4.1",
+        "priority": 100,
+        "capabilities": {
+          "chat_completions": true,
+          "responses": true,
+          "streaming": true
+        }
+      }
+    ]
+  },
+  {
+    "public_name": "gemini-2.5-pro",
+    "capabilities": {
+      "chat_completions": true,
+      "responses": true,
+      "streaming": true
+    },
+    "targets": [
+      {
+        "provider": "gemini",
+        "upstream_name": "gemini-2.5-pro",
+        "priority": 100,
+        "capabilities": {
+          "chat_completions": true,
+          "responses": true,
+          "streaming": true
+        }
+      }
+    ]
+  }
+]
